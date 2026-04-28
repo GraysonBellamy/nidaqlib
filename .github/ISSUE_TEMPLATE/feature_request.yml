@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a new channel type, sink, backend, or behaviour
+labels: [enhancement]
+body:
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Sketch the API. If it's a new channel type, cite the relevant `nidaqmx-python` `add_*_chan` method.
+    validations:
+      required: true
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Subsystem(s)
+      multiple: true
+      options:
+        - analog input
+        - analog output
+        - digital input
+        - digital output
+        - counter input
+        - counter output
+        - timing/triggers
+        - sinks/logging
+        - n/a
+  - type: dropdown
+    id: safety
+    attributes:
+      label: Safety tier (for output / actuator changes)
+      options:
+        - read-only
+        - stateful
+        - output (requires confirm)
+        - destructive (calibration, etc.)
+        - n/a

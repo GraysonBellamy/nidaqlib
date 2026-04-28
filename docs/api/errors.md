@@ -1,0 +1,3 @@
+# `nidaqlib.errors`
+
+::: nidaqlib.errors

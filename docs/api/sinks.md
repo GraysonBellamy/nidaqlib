@@ -1,0 +1,3 @@
+# `nidaqlib.sinks`
+
+::: nidaqlib.sinks

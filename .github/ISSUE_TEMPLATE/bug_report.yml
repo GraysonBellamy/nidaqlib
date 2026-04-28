@@ -1,0 +1,41 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Include the exact exception type, message, and `ErrorContext` fields if available.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Ideally uses `FakeDaqBackend` or a fixture, so we can reproduce without an NI driver.
+      render: python
+  - type: input
+    id: version
+    attributes:
+      label: nidaqlib version
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+  - type: input
+    id: os
+    attributes:
+      label: OS
+  - type: input
+    id: device
+    attributes:
+      label: NI device model and DAQmx driver version (if hardware-related)
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: DEBUG-level logs from `nidaqlib.tasks` / `nidaqlib.streaming` if available.
+      render: text

@@ -1,0 +1,3 @@
+# `nidaqlib.manager`
+
+::: nidaqlib.manager
