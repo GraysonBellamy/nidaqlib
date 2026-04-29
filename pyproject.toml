@@ -95,6 +95,7 @@ dev = [
     { include-group = "type" },
     { include-group = "test" },
     { include-group = "docs" },
+    "nptdms>=1.10.0",
     "pre-commit>=4.0",
 ]
 lint = [

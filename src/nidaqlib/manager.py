@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from nidaqlib.backend.base import DaqBackend
+    from nidaqlib.system.models import DeviceInfo
     from nidaqlib.tasks.models import DaqBlock, DaqReading
     from nidaqlib.tasks.spec import TaskSpec
 
@@ -88,6 +89,42 @@ def _channels_of(spec: TaskSpec) -> tuple[str, ...]:
     return tuple(ch.physical_channel for ch in spec.channels)
 
 
+# Module-level reservation lookup. NI's C-Series TC modules reserve the
+# whole module per task — a second concurrent task targeting any AI channel
+# on the same module is rejected at start() with NI -50103. Validated on
+# the bench day against an NI 9214; the 9211/9212/9213 share the same
+# behaviour per NI's hardware reference (see design.md §15.3).
+_MODULE_RESERVED_PRODUCTS: frozenset[str] = frozenset(
+    {
+        "NI 9211",
+        "NI 9212",
+        "NI 9213",
+        "NI 9214",
+    }
+)
+
+
+def _is_module_reserved_product(product_type: str | None) -> bool:
+    """Return ``True`` for product types known to reserve the whole module."""
+    return product_type is not None and product_type in _MODULE_RESERVED_PRODUCTS
+
+
+async def _configure_then_start(session: DaqSession, *, confirm: bool = False) -> None:
+    """Configure (if needed) and start a session.
+
+    Manager-owned sessions are constructed eagerly in :meth:`add` but their
+    NI resources are allocated lazily here, on the first ``start``. This
+    keeps :meth:`add` non-blocking (no driver I/O) while preserving
+    :class:`DaqSession`'s strict configure-before-start invariant.
+
+    ``confirm=True`` is forwarded to :meth:`DaqSession.start` for task kinds
+    whose start can actuate hardware immediately (counter-output pulse trains).
+    """
+    if not session.is_configured:
+        await session.configure()
+    await session.start(confirm=confirm)
+
+
 class DaqManager:
     """Lifecycle, dispatch, and group operations across multiple NI tasks.
 
@@ -120,6 +157,11 @@ class DaqManager:
         self._task_devices: dict[str, tuple[str, ...]] = {}
         self._global_lock = anyio.Lock()
         self._closed = False
+        # Cache of (device → product_type) so the module-level preflight
+        # only queries the backend once per device. ``_NOT_QUERIED`` is the
+        # sentinel for "haven't tried yet"; ``None`` means "queried, NI
+        # returned no info / the device alias is unknown".
+        self._device_product_cache: dict[str, str | None] = {}
 
     # -- Properties ----------------------------------------------------------
 
@@ -152,6 +194,16 @@ class DaqManager:
         Performs a best-effort preflight conflict check against tasks
         already managed (design doc §15.3). NI is the final authority —
         the preflight only catches obvious overlaps.
+
+        ``add`` does **not** allocate NI resources — it constructs a
+        :class:`DaqSession` and records it. The session's
+        :meth:`DaqSession.configure` (which creates the NI task and applies
+        channels / timing / logging / triggers) runs lazily on the first
+        :meth:`start` for the task. Any NI rejection of the ``spec`` (bad
+        physical channel, unsupported channel kind, sample rate above
+        device max, …) therefore surfaces at :meth:`start` time, not
+        :meth:`add` time. The preflight catches operator-side overlap
+        only; everything NI validates lives downstream.
 
         Args:
             name: Manager-side label for this task. Must be unique.
@@ -186,12 +238,11 @@ class DaqManager:
                 self._refcounts[name] = self._refcounts.get(name, 1) + 1
                 return existing
 
-            self._preflight_conflicts(name, spec)
-
             if backend is None:
                 from nidaqlib.backend.nidaqmx_backend import NidaqmxBackend  # noqa: PLC0415
 
                 backend = NidaqmxBackend()
+            await self._preflight_conflicts(name, spec, backend)
             session = DaqSession(spec, backend)
             self._sessions[name] = session
             self._specs[name] = spec
@@ -205,32 +256,87 @@ class DaqManager:
                 self._device_locks.setdefault(dev, anyio.Lock())
             return session
 
-    def _preflight_conflicts(self, name: str, spec: TaskSpec) -> None:
-        """Raise :class:`NIDaqResourceError` on obvious physical-channel overlap.
+    async def _preflight_conflicts(self, name: str, spec: TaskSpec, backend: DaqBackend) -> None:
+        """Raise :class:`NIDaqResourceError` on physical-channel or module overlap.
 
-        Best-effort — only catches exact ``(device, physical_channel)``
-        collisions across already-registered specs. NI is the authority;
-        this exists so common operator mistakes (reusing ``Dev1/ai0`` on
-        two tasks) fail fast with a clear message.
+        Two layers of best-effort preflight (NI is the authority; these run
+        so common operator mistakes fail fast with a clear message):
+
+        - **Channel-level**: catches exact ``(device, physical_channel)``
+          collisions across already-registered specs.
+        - **Module-level**: for product types known to reserve the whole
+          module per task (NI 9211/9212/9213/9214 — TC modules — see
+          design.md §15.3), any two specs that share the same device alias
+          conflict, even on different AI channels. The product type is
+          queried via ``backend.device_info(...)`` and cached. If the
+          backend can't resolve the device (fake backend, NI returned
+          nothing, NI raised), the module-level check is skipped — NI
+          still rejects with -50103 at start time.
         """
         new_set = set(_channels_of(spec))
         if not new_set:
             return
-        conflicts: dict[str, list[str]] = {}
+
+        # Channel-level overlap.
+        channel_conflicts: dict[str, list[str]] = {}
         for other_name, other_spec in self._specs.items():
             other_set = set(_channels_of(other_spec))
             overlap = new_set & other_set
             if overlap:
-                conflicts[other_name] = sorted(overlap)
-        if conflicts:
+                channel_conflicts[other_name] = sorted(overlap)
+        if channel_conflicts:
             raise NIDaqResourceError(
-                f"physical-channel conflict: task {name!r} overlaps with {sorted(conflicts)!r}",
+                f"physical-channel conflict: task {name!r} overlaps with "
+                f"{sorted(channel_conflicts)!r}",
                 context=ErrorContext(
                     task_name=name,
                     operation="manager.add",
-                    extra={"conflicts": conflicts},
+                    extra={"conflicts": channel_conflicts},
                 ),
             )
+
+        # Module-level overlap. Only checked for products known to reserve
+        # the whole module per task (e.g. NI 9214). All other product types
+        # fall through to NI's runtime check.
+        new_devices = {_device_of(c) for c in new_set}
+        module_conflicts: dict[str, str] = {}
+        for dev in new_devices:
+            if not await self._is_module_reserved_device(dev, backend):
+                continue
+            for other_name, other_spec in self._specs.items():
+                other_devices = {_device_of(c) for c in _channels_of(other_spec)}
+                if dev in other_devices:
+                    module_conflicts[other_name] = dev
+                    break
+        if module_conflicts:
+            offending = sorted(set(module_conflicts.values()))
+            raise NIDaqResourceError(
+                f"module-level reservation conflict: task {name!r} would "
+                f"share whole-module-reserved device(s) {offending!r} with "
+                f"{sorted(module_conflicts)!r}. NI 9211/9212/9213/9214 "
+                f"reserve the whole module per task; serialise via "
+                f"add()/remove() instead of running concurrently. "
+                f"(See design.md §15.3 — would otherwise fail at start with "
+                f"NI -50103.)",
+                context=ErrorContext(
+                    task_name=name,
+                    operation="manager.add",
+                    extra={"module_conflicts": module_conflicts},
+                ),
+            )
+
+    async def _is_module_reserved_device(self, device: str, backend: DaqBackend) -> bool:
+        """Look up (and cache) ``device``'s product_type; return True for TC modules."""
+        from anyio.to_thread import run_sync  # noqa: PLC0415
+
+        if device not in self._device_product_cache:
+            info: DeviceInfo | None
+            try:
+                info = await run_sync(backend.device_info, device)
+            except Exception:
+                info = None
+            self._device_product_cache[device] = info.product_type if info else None
+        return _is_module_reserved_product(self._device_product_cache[device])
 
     async def remove(self, name: str) -> None:
         """Decrement refcount; tear down on the last :meth:`remove`.
@@ -278,7 +384,7 @@ class DaqManager:
         """Start one or more managed tasks. Defaults to all in add-order."""
 
         async def _do(session: DaqSession) -> None:
-            await session.start(confirm=confirm)
+            await _configure_then_start(session, confirm=confirm)
 
         return await self._for_each(
             names,
@@ -351,7 +457,7 @@ class DaqManager:
             session = self._sessions[name]
             try:
                 async with self._operation_locks(name):
-                    await session.start(confirm=confirm)
+                    await _configure_then_start(session, confirm=confirm)
                 results[name] = TaskResult(name=name, value=None, error=None)
                 armed.append(name)
             except NIDaqError as exc:
@@ -387,7 +493,7 @@ class DaqManager:
         master_session = self._sessions[master]
         try:
             async with self._operation_locks(master):
-                await master_session.start(confirm=confirm)
+                await _configure_then_start(master_session, confirm=confirm)
             results[master] = TaskResult(name=master, value=None, error=None)
         except NIDaqError as exc:
             results[master] = TaskResult(name=master, value=None, error=exc)
@@ -457,9 +563,6 @@ class DaqManager:
         )
 
     # -- Internal dispatchers -----------------------------------------------
-
-    async def _call_start(self, session: DaqSession) -> None:
-        await session.start()
 
     async def _call_stop(self, session: DaqSession) -> None:
         await session.stop()

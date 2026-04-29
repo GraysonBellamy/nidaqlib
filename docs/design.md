@@ -856,51 +856,77 @@ async def _drain() -> None:
 
 - **No `anyio.*` calls from `_on_buffer_event`.** Use `queue.SimpleQueue` (thread-safe, no asyncio dependency) or `BlockingPortal.start_task_soon` if you must touch the event loop.
 - The callback must be short. Heavy work (numpy reshaping, sink writes) belongs on the consumer side.
-- Keep a strong reference to the callback for the lifetime of the task; NI stores it as a raw C function pointer and Python GC will silently break the seam otherwise.
-- Unregister the callback in `DaqSession.close()` before stopping the task.
+- Keep a strong reference to the callback for the lifetime of the task; NI stores it as a raw C function pointer and Python GC will silently break the seam otherwise. `nidaqmx.Task` uses `__slots__` so the wrapper cannot be stashed on the task object — keep it on the backend instance, keyed by `id(task)`.
 
-#### Shutdown protocol (mandatory)
+#### Startup protocol (mandatory — NI ordering)
 
-`anyio.to_thread.run_sync` does **not** propagate cancellation into the worker thread by default. A `_drain` coroutine awaiting `chunk_q.get()` in a worker is not interrupted by `DaqSession.close()` — the thread blocks until something arrives. Once the NI callback is unregistered, nothing else will ever arrive, and the close call deadlocks.
+NI requires `register_every_n_samples_acquired_into_buffer_event` to be called **before** `task.start()`. A registration on a running task is rejected with status code **-200960** ("Register all your DAQmx software events prior to starting the task"). The fake backend mirrors this invariant; the unit suite would otherwise pass while the real NI driver rejects the same code.
 
-The fix is an explicit ordered shutdown. `DaqSession.close()` for a callback-bridge session MUST execute:
+The bridge therefore needs a `DaqSession` in the **configured-but-not-yet-started** state at registration time. `DaqSession` exposes this seam via `configure()` (allocates the NI task, applies channels / timing / logging / triggers) separately from `start()` (issues `task.start()`). `open_task(spec, autostart=False)` yields a configured-not-started session for this exact path.
 
 ```python
-async def close(self) -> None:
-    if self._closed:
-        return
-    self._closed = True
+# 1. configure_sync — channels, timing, logging, triggers; raw_task is now usable.
+await session.configure()
 
-    # 1. Unregister the NI callback FIRST. After this, no new chunks enqueue.
-    if self._callback_registered:
-        self._task.register_every_n_samples_acquired_into_buffer_event(0, None)
-        self._callback_registered = False
+# 2. register the buffer event while the task is still stopped.
+backend.register_every_n_samples(session.raw_task, chunk_size, _on_buffer_event)
 
-    # 2. Wake the drainer with a sentinel that the queue.get returns normally.
-    self._chunk_q.put_nowait(_SENTINEL)
+# 3. start — first callback fires shortly after.
+await session.start()
+```
 
-    # 3. Wait for the drainer to exit cleanly.
-    await self._drain_done.wait()
+`record(source, use_callback_bridge=True)` validates `source.is_configured and not source.is_started`, then runs steps 2 and 3 internally so the call site stays terse:
 
-    # 4. Stop and close the NI task (must happen AFTER the callback is gone —
-    #    a callback fired against a stopped task can crash the driver).
-    await anyio.to_thread.run_sync(self._task.stop)
-    await anyio.to_thread.run_sync(self._task.close)
+```python
+async with (
+    open_task(spec, autostart=False) as session,
+    record(session, chunk_size=N, use_callback_bridge=True) as (rx, summary),
+):
+    async for block in rx:
+        ...
+```
 
-    # 5. Close the BlockingPortal.
-    await self._portal.__aexit__(None, None, None)
+#### Shutdown protocol (mandatory — NI ordering)
+
+`anyio.to_thread.run_sync` does **not** propagate cancellation into the worker thread by default. A `_drain` coroutine awaiting `chunk_q.get()` in a worker is not interrupted by recorder exit — the thread blocks until something arrives. Without an explicit sentinel the close call deadlocks.
+
+NI also rejects the unregister call (`register_every_n_samples_acquired_into_buffer_event(0, None)`) on a running task with status code **-200986** ("DAQmx software event cannot be unregistered because the task is running"). So the on-exit ordering is dictated by NI:
+
+```python
+async def _cleanup_on_exit() -> None:
+    try:
+        await anyio.sleep_forever()  # park until the recorder is cancelled
+    finally:
+        with anyio.CancelScope(shield=True):
+            # 1. Stop the NI task. After this, in-flight callbacks have
+            #    completed and no new ones fire — `task.stop()` blocks
+            #    until the driver thread quiesces.
+            await session.stop()
+
+            # 2. Unregister the buffer event. NI accepts this once the
+            #    task is stopped (-200986 only fires while running).
+            backend.unregister_every_n_samples(session.raw_task, handle)
+
+            # 3. Wake the drainer.
+            chunk_q.put_nowait(_SENTINEL)
+
+            # 4. Wait for the drainer to exit cleanly (no leaked thread).
+            await drain_done.wait()
+            # 5. session.close() runs in open_task __aexit__ — closes the NI
+            #    task. close() checks _started and skips redundant stop.
 ```
 
 Ordering invariants:
 
 | Ordering requirement | Why |
 |---|---|
-| Unregister BEFORE sentinel | A callback that fires after the sentinel could enqueue a real array behind it; the drainer would exit on the sentinel and leak that array. |
-| Sentinel BEFORE stop | The drainer must exit before the task stops; otherwise a stop-induced final callback can race with the sentinel. |
-| Stop BEFORE close | NI requires this; close on a running task is undefined. |
-| Drain-exit BEFORE stop | The drainer holds the reference to the underlying NI task object; stopping while it's mid-read is unsafe. |
+| Register BEFORE start | NI -200960 — software events must be registered before `task.start()`. |
+| Stop BEFORE unregister | NI -200986 — unregister rejected on a running task. `task.stop()` is the synchronisation point that guarantees no new callbacks fire. |
+| Unregister BEFORE sentinel | After unregister NI cannot fire a callback that races with the sentinel and orphans an array behind it in the queue. |
+| Sentinel BEFORE drain-wait | The drainer is parked in `chunk_q.get()`; only the sentinel wakes it. |
+| Drain-wait BEFORE close | The drainer holds the strong reference to the task object; closing while it's mid-iteration is unsafe. |
 
-Get this seam right early. Debugging "callback fired but the stream never got the chunk" hours into a heat-flux run is awful, and debugging "close hangs forever" with no traceback is worse.
+Get this seam right early. Debugging "callback fired but the stream never got the chunk" hours into a heat-flux run is awful, and debugging "close hangs forever" with no traceback is worse. Both error codes (-200960 on the way in, -200986 on the way out) were observed on the bench day against an NI 9214 — the fake backend now enforces the same ordering so the unit suite catches a regression at unit-test time.
 
 ---
 
@@ -1300,6 +1326,14 @@ class PhysicalResource:
 ```
 
 This can support preflight checks for obvious conflicts, but NI-DAQmx should remain the final authority.
+
+#### Observed NI reservation behaviour
+
+| Module class | Reservation granularity | NI error on conflict | Notes |
+|---|---|---|---|
+| TC modules (NI 9211 / 9212 / 9213 / 9214) | Whole module | **-50103** "The specified resource is reserved." | Confirmed on NI 9214 hardware day. A second concurrent task targeting any AI channel on a TC-module-with-an-active-task is rejected at `start()`. The manager must serialise per-module, not per-channel, for these. |
+
+The preflight in `DaqManager.add()` only catches exact `(device, physical_channel)` overlap. Module-level reservations (`-50103`) surface only at `start()` and must be handled via `ErrorPolicy.RETURN` or the `start_synchronized` rollback path.
 
 ---
 

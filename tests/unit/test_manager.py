@@ -83,6 +83,69 @@ async def test_add_unique_channels_no_conflict() -> None:
 
 
 @pytest.mark.anyio
+async def test_add_module_level_preflight_rejects_tc_module_share() -> None:
+    """A second task on a TC-class module is rejected at preflight.
+
+    Locks the §15.3 module-reservation guard against the fake backend so a
+    regression doesn't have to wait for hardware day. Uses
+    ``FakeDaqBackend.register_device_info`` to script the product type
+    that the preflight queries via ``backend.device_info``.
+    """
+    backend = FakeDaqBackend()
+    backend.register_device_info("cDAQ1Mod1", product_type="NI 9214")
+    async with DaqManager() as mgr:
+        await mgr.add(
+            "first",
+            _ai_spec("first", channel="cDAQ1Mod1/ai0"),
+            backend=backend,
+        )
+        with pytest.raises(NIDaqResourceError, match="module-level reservation"):
+            await mgr.add(
+                "second",
+                _ai_spec("second", channel="cDAQ1Mod1/ai1"),
+                backend=backend,
+            )
+
+
+@pytest.mark.anyio
+async def test_add_module_level_preflight_skips_unknown_product() -> None:
+    """A device with an unknown / non-reserved product type allows two tasks.
+
+    Confirms the module-level guard is a *narrow* allow-list — only the
+    products in :data:`_MODULE_RESERVED_PRODUCTS` (TC modules) trigger
+    rejection. Generic AI modules / unknown product types still go
+    through to NI for runtime adjudication.
+    """
+    backend = FakeDaqBackend()
+    # USB-6001 is a multifunction AI module that does NOT reserve the
+    # whole module per task. Even though the fake doesn't enforce NI's
+    # actual reservation behaviour, the preflight should not raise.
+    backend.register_device_info("Dev1", product_type="USB-6001")
+    async with DaqManager() as mgr:
+        await mgr.add("a", _ai_spec("a", channel="Dev1/ai0"), backend=backend)
+        await mgr.add("b", _ai_spec("b", channel="Dev1/ai1"), backend=backend)
+        assert set(mgr.names) == {"a", "b"}
+
+
+@pytest.mark.anyio
+async def test_add_module_level_preflight_handles_unknown_device() -> None:
+    """When ``device_info`` returns ``None``, the module-level check is skipped.
+
+    Production behaviour: an unknown device alias means ``backend.device_info``
+    returns ``None`` (NI would otherwise reject downstream at start time).
+    The preflight must not raise on that path — the module-level check
+    only fires when we have a positively-identified TC-class product.
+    """
+    backend = FakeDaqBackend()  # no device info registered
+    async with DaqManager() as mgr:
+        await mgr.add("a", _ai_spec("a", channel="Dev1/ai0"), backend=backend)
+        # Same device, different channel — preflight should fall through
+        # because the fake returned None for device_info.
+        await mgr.add("b", _ai_spec("b", channel="Dev1/ai1"), backend=backend)
+        assert set(mgr.names) == {"a", "b"}
+
+
+@pytest.mark.anyio
 async def test_start_and_read_block_fanout() -> None:
     backend = FakeDaqBackend(read_block_default_shape=(1, 32))
     async with DaqManager() as mgr:

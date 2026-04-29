@@ -25,9 +25,16 @@ from nidaqlib import (
     AnalogInputVoltage,
     NIDaqError,
     TaskSpec,
+    ThermocoupleInput,
     open_task,
     record_polled,
 )
+
+_TC_TYPES = ("J", "K", "T", "E", "N", "R", "S", "B")
+_DEFAULT_VOLTAGE_MIN = -10.0
+_DEFAULT_VOLTAGE_MAX = 10.0
+_DEFAULT_TC_MIN_DEGC = -50.0
+_DEFAULT_TC_MAX_DEGC = 200.0
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -61,10 +68,34 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Stream for this many seconds. Without it, performs one poll.",
     )
     parser.add_argument(
-        "--min", dest="min_val", type=float, default=-10.0, help="Lower input range, V."
+        "--min",
+        dest="min_val",
+        type=float,
+        default=None,
+        help=(
+            "Lower input range. Defaults to -10 V for voltage AI, "
+            "-50 degC when --thermocouple-type is set."
+        ),
     )
     parser.add_argument(
-        "--max", dest="max_val", type=float, default=10.0, help="Upper input range, V."
+        "--max",
+        dest="max_val",
+        type=float,
+        default=None,
+        help=(
+            "Upper input range. Defaults to +10 V for voltage AI, "
+            "200 degC when --thermocouple-type is set."
+        ),
+    )
+    parser.add_argument(
+        "--thermocouple-type",
+        choices=_TC_TYPES,
+        default=None,
+        help=(
+            "If set, build a ThermocoupleInput channel of this type "
+            "(J/K/T/E/N/R/S/B) instead of AnalogInputVoltage. Required for "
+            "TC-only modules (NI 9211/9212/9213/9214) which reject voltage AI."
+        ),
     )
     parser.add_argument(
         "--json", action="store_true", help="Emit JSON instead of human-readable rows."
@@ -79,14 +110,33 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _build_spec(args: argparse.Namespace) -> TaskSpec:
-    channels = [
-        AnalogInputVoltage(
-            physical_channel=ch,
-            min_val=args.min_val,
-            max_val=args.max_val,
-        )
-        for ch in args.channels
-    ]
+    if args.thermocouple_type is not None:
+        from nidaqmx.constants import ThermocoupleType  # noqa: PLC0415
+
+        tc_type = ThermocoupleType[args.thermocouple_type]
+        min_val = args.min_val if args.min_val is not None else _DEFAULT_TC_MIN_DEGC
+        max_val = args.max_val if args.max_val is not None else _DEFAULT_TC_MAX_DEGC
+        channels: list[AnalogInputVoltage | ThermocoupleInput] = [
+            ThermocoupleInput(
+                physical_channel=ch,
+                unit="degC",
+                thermocouple_type=tc_type,
+                min_val=min_val,
+                max_val=max_val,
+            )
+            for ch in args.channels
+        ]
+    else:
+        min_val = args.min_val if args.min_val is not None else _DEFAULT_VOLTAGE_MIN
+        max_val = args.max_val if args.max_val is not None else _DEFAULT_VOLTAGE_MAX
+        channels = [
+            AnalogInputVoltage(
+                physical_channel=ch,
+                min_val=min_val,
+                max_val=max_val,
+            )
+            for ch in args.channels
+        ]
     # No Timing: poll() requires on-demand or no-clock tasks.
     return TaskSpec(name=args.task_name, channels=channels)
 

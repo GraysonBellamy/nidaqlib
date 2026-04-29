@@ -185,3 +185,76 @@ async def test_a6_poll_rejected_for_continuous_task(
     async with open_task(tc_spec_continuous) as session:
         with pytest.raises(NIDaqTaskStateError):
             await session.poll()
+
+
+# A7 — stop / restart cycle on the same session ----------------------------
+
+
+async def test_a7_stop_then_restart_same_session(
+    tc_spec_continuous: TaskSpec,
+) -> None:
+    """``stop()`` + ``start()`` on the same session resumes acquisition.
+
+    Verifies the lifecycle code path that lets a caller pause acquisition
+    without tearing down the session. NI permits ``task.start()`` after a
+    prior ``stop()`` without a re-configure; this test confirms our
+    wrapper preserves that.
+
+    On real hardware:
+
+    - ``read_block`` works after the second ``start``.
+    - ``task_started_at`` advances — the new run gets a fresh anchor (we
+      assume the second start is not silently reusing the first anchor).
+    """
+    chunk = 4
+    async with open_task(tc_spec_continuous) as session:
+        first = await session.read_block(chunk)
+        first_anchor = session.task_started_at
+        assert first_anchor is not None
+
+        await session.stop()
+        assert not session.is_started
+
+        await session.start()
+        assert session.is_started
+        second_anchor = session.task_started_at  # type: ignore[unreachable]
+        assert second_anchor is not None
+        # Second anchor must be >= first; samples in the second run start
+        # over at sample_index 0 since NI re-arms the clock on restart.
+        assert second_anchor >= first_anchor
+
+        second = await session.read_block(chunk)
+        assert second.data.shape == first.data.shape
+
+
+# A8 — invalid sample rate is rejected with a clear error -------------------
+
+
+async def test_a8_invalid_sample_rate_rejected(
+    tc_config: TcHardwareConfig,
+) -> None:
+    """A rate well above the module's max surfaces a typed NI error.
+
+    The 9214's hardware max is around 75 S/s (cold-junction, high-resolution
+    mode). A 100 kHz request must fail at ``start()`` with
+    :class:`NIDaqBackendError` carrying NI's code, not a silent reduction
+    or a generic exception. Confirms the configuration error path is wired
+    correctly through the wrapper.
+    """
+    from nidaqlib import AcquisitionMode, NIDaqError, Timing
+
+    from .conftest import make_tc_channel
+
+    spec = TaskSpec(
+        name="tc_too_fast",
+        channels=[make_tc_channel(tc_config, name="primary")],
+        timing=Timing(rate_hz=100_000.0, mode=AcquisitionMode.CONTINUOUS),
+    )
+    with pytest.raises(NIDaqError) as exc_info:
+        async with open_task(spec):
+            pass
+    # The NI error code must be present on the wrapper context — that's
+    # what an operator inspecting the failure will see in their logs.
+    ctx = exc_info.value.context
+    assert ctx is not None
+    assert ctx.ni_error_code is not None, f"expected NI error_code on context, got {ctx!r}"

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from nidaqlib.channels.base import ChannelSpec
+    from nidaqlib.system.models import DeviceInfo
     from nidaqlib.tasks.spec import TdmsLogging, Timing
     from nidaqlib.tasks.triggers import TriggerSpec
 
@@ -66,9 +67,16 @@ class NidaqmxBackend:
     - Trigger configuration.
     - Every-N-samples buffer-event callbacks (the §11.3.2 bridge driver).
 
-    The backend holds no per-task state — task handles are owned by the
-    caller (typically :class:`~nidaqlib.tasks.session.DaqSession`).
+    Per-task state held here is limited to the strong reference the
+    callback bridge needs: NI stores the registered callback as a raw C
+    function pointer (see §11.3.2 GC seam), and ``nidaqmx.Task`` uses
+    ``__slots__`` so we can't stash the wrapper on the task itself. The
+    backend keeps it in ``self._callback_wrappers`` keyed by ``id(task)``
+    until ``unregister_every_n_samples`` runs.
     """
+
+    def __init__(self) -> None:
+        self._callback_wrappers: dict[int, Callable[..., int]] = {}
 
     def create_task(self, name: str) -> Any:
         """Create an ``nidaqmx.Task`` with ``name``.
@@ -696,10 +704,12 @@ class NidaqmxBackend:
                     ni_error_code=getattr(exc, "error_code", None),
                 ),
             ) from exc
-        # Stash the wrapper on the task so the backend's strong-ref invariant
-        # is satisfied even if the caller drops their copy. Stored on a
-        # private attribute so it doesn't collide with anything NI uses.
-        task._nidaqlib_buffer_event_cb = _ni_cb
+        # Strong-ref the wrapper for the lifetime of the registration. NI
+        # stores ``_ni_cb`` as a raw C function pointer; if Python GC reaps
+        # it, the next firing crashes the driver (see §11.3.2 GC seam).
+        # ``nidaqmx.Task`` uses ``__slots__`` so we can't stash on the task
+        # itself — keep it on the backend instance, keyed by id(task).
+        self._callback_wrappers[id(task)] = _ni_cb
         return task
 
     def unregister_every_n_samples(self, task: Any, handle: Any) -> None:
@@ -724,7 +734,40 @@ class NidaqmxBackend:
                 ),
             ) from exc
         # Drop the strong reference now that NI is no longer holding it.
-        task._nidaqlib_buffer_event_cb = None
+        self._callback_wrappers.pop(id(task), None)
+
+    def device_info(self, device: str) -> DeviceInfo | None:
+        """Return product info for ``device`` via ``nidaqmx.system.Device``.
+
+        Direct lookup — does not enumerate the whole system. Returns
+        ``None`` if NI does not recognise the device alias. Used by the
+        manager's preflight to detect module-level reservation (e.g. TC
+        modules reserve the whole module per task).
+        """
+        from nidaqlib.system.models import DeviceInfo as _DeviceInfo  # noqa: PLC0415
+
+        nidaqmx = _import_nidaqmx()
+        try:
+            dev = nidaqmx.system.Device(device)
+            product_type = getattr(dev, "product_type", None)
+        except nidaqmx.errors.DaqError:
+            return None
+        if product_type is None:
+            return None
+        # Only product_type matters for the reservation lookup; channel
+        # inventories are a separate (more expensive) call we don't need
+        # here. Leave them empty.
+        return _DeviceInfo(
+            name=device,
+            product_type=product_type,
+            serial_number=None,
+            ai_physical_channels=(),
+            ao_physical_channels=(),
+            di_lines=(),
+            do_lines=(),
+            ci_physical_channels=(),
+            co_physical_channels=(),
+        )
 
 
 __all__ = ["NidaqmxBackend"]

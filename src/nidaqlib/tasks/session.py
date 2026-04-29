@@ -64,6 +64,7 @@ class DaqSession:
         self._timeout = timeout
         self._task: Any = None
         self._lock = anyio.Lock()
+        self._configured = False
         self._started = False
         self._closed = False
         self._task_started_at: datetime | None = None
@@ -79,6 +80,17 @@ class DaqSession:
     def spec(self) -> TaskSpec:
         """The :class:`TaskSpec` this session was constructed from."""
         return self._spec
+
+    @property
+    def is_configured(self) -> bool:
+        """``True`` after :meth:`configure` succeeds and before :meth:`close`.
+
+        A configured session has a backing NI task with channels, timing,
+        logging, and triggers applied — but ``task.start()`` has not yet
+        been called. Buffer-event callback registration (§11.3.2) is only
+        valid in this window.
+        """
+        return self._configured and not self._closed
 
     @property
     def is_started(self) -> bool:
@@ -99,13 +111,17 @@ class DaqSession:
         ``_FakeTask``. Use this for advanced NI features that aren't exposed
         via the wrapper — the escape hatch from design doc §7.4.
 
+        The handle is available once :meth:`configure` has succeeded — that
+        is, in either the configured-not-started or started state. The
+        callback bridge (§11.3.2) needs the handle pre-start to register
+        the buffer event.
+
         Raises:
-            NIDaqTaskStateError: The session has not been started yet (no
-                task handle has been created).
+            NIDaqTaskStateError: The session has not been configured yet.
         """
         if self._task is None:
             raise NIDaqTaskStateError(
-                "raw_task is unavailable until the session is started",
+                "raw_task is unavailable until the session is configured",
                 context=ErrorContext(task_name=self._spec.name, operation="raw_task"),
             )
         return self._task
@@ -125,18 +141,48 @@ class DaqSession:
 
     # -- Lifecycle -----------------------------------------------------------
 
-    async def start(self, *, confirm: bool = False) -> None:
-        """Create the underlying task, configure it, and start sampling.
+    async def configure(self) -> None:
+        """Create the underlying task and apply channels / timing / logging / trigger.
 
-        The first successful call creates/configures the underlying NI task.
-        Later calls after :meth:`stop` reuse that configured task and reset
-        the block/sample counters for a new run.
+        After this method, ``raw_task`` is available and any pre-start hooks
+        (notably the §11.3.2 buffer-event callback registration) may run.
+        ``task.start()`` is **not** called — use :meth:`start` for that.
 
-        ``confirm=True`` is required for task kinds whose ``start`` call can
-        actuate hardware immediately (currently counter-output pulse trains).
+        On failure, the partial task is torn down so the session does not
+        leak NI resources.
 
         Raises:
-            NIDaqTaskStateError: Already started or already closed.
+            NIDaqTaskStateError: Already configured, started, or closed.
+        """
+        if self._closed:
+            raise NIDaqTaskStateError(
+                f"session for task {self._spec.name!r} is closed",
+                context=ErrorContext(task_name=self._spec.name, operation="configure"),
+            )
+        if self._configured:
+            raise NIDaqTaskStateError(
+                f"session for task {self._spec.name!r} is already configured",
+                context=ErrorContext(task_name=self._spec.name, operation="configure"),
+            )
+        async with self._lock:
+            await run_sync(self._configure_sync)
+            self._configured = True
+
+    async def start(self, *, confirm: bool = False) -> None:
+        """Start the configured task.
+
+        :meth:`configure` must have run first. This method calls NI's
+        ``task.start()`` and records the wall-clock anchor used for §8.7
+        sample-time reconstruction. Calling :meth:`start` again after
+        :meth:`stop` reuses the configured task and resets the
+        block/sample counters for a new run.
+
+        ``confirm=True`` is required for task kinds whose ``start`` call
+        can actuate hardware immediately (currently counter-output pulse
+        trains).
+
+        Raises:
+            NIDaqTaskStateError: Not configured, already started, or closed.
             NIDaqValidationError: Starting would actuate hardware without
                 explicit confirmation.
         """
@@ -145,26 +191,18 @@ class DaqSession:
                 f"session for task {self._spec.name!r} is closed",
                 context=ErrorContext(task_name=self._spec.name, operation="start"),
             )
+        if not self._configured:
+            raise NIDaqTaskStateError(
+                f"session for task {self._spec.name!r} must be configured before start",
+                context=ErrorContext(task_name=self._spec.name, operation="start"),
+            )
         if self._started:
             raise NIDaqTaskStateError(
                 f"session for task {self._spec.name!r} is already started",
                 context=ErrorContext(task_name=self._spec.name, operation="start"),
             )
+        self._validate_start_safety(confirm=confirm)
         async with self._lock:
-            if self._closed:
-                raise NIDaqTaskStateError(
-                    f"session for task {self._spec.name!r} is closed",
-                    context=ErrorContext(task_name=self._spec.name, operation="start"),
-                )
-            if self._started:
-                raise NIDaqTaskStateError(
-                    f"session for task {self._spec.name!r} is already started",
-                    context=ErrorContext(task_name=self._spec.name, operation="start"),
-                )
-            self._validate_start_safety(confirm=confirm)
-            configured_now = self._task is None
-            if configured_now:
-                await run_sync(self._configure_sync)
             # Capture the wall-clock anchor as close to the start as possible
             # — `start_task` returns once NI has armed the clock, so the
             # first sample's wall-clock is approximately this timestamp + a
@@ -173,9 +211,9 @@ class DaqSession:
             try:
                 await run_sync(self._backend.start_task, self._task)
             except BaseException:
-                if configured_now:
-                    await run_sync(self._backend.close_task, self._task)
-                    self._task = None
+                await run_sync(self._backend.close_task, self._task)
+                self._task = None
+                self._configured = False
                 raise
             self._task_started_at = anchor
             self._first_sample_index = 0
@@ -244,6 +282,7 @@ class DaqSession:
                 self._started = False
             await run_sync(self._backend.close_task, self._task)
             self._task = None
+            self._configured = False
 
     # -- Reads ---------------------------------------------------------------
 
@@ -629,7 +668,8 @@ class DaqSession:
     # -- Async context manager ----------------------------------------------
 
     async def __aenter__(self) -> DaqSession:
-        """Enter the async context — calls :meth:`start`."""
+        """Enter the async context — calls :meth:`configure` then :meth:`start`."""
+        await self.configure()
         await self.start()
         return self
 

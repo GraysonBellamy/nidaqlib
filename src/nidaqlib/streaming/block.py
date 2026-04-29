@@ -114,6 +114,53 @@ _SENTINEL: Final[object] = object()
 """Identity-checked queue sentinel for the §11.3.2 ordered shutdown."""
 
 
+def _validate_record_state(
+    source: DaqSession,
+    *,
+    error_policy: ErrorPolicy,
+    use_callback_bridge: bool,
+) -> None:
+    """Reject lifecycle / option combinations the recorder cannot serve.
+
+    Splits out of :func:`record` so the entry-point branch count stays under
+    the project's lint cap.
+    """
+    if use_callback_bridge:
+        if error_policy is ErrorPolicy.RETURN:
+            raise NIDaqTaskStateError(
+                "record(use_callback_bridge=True) does not support "
+                "ErrorPolicy.RETURN — only RAISE is wired for the §11.3.2 "
+                "bridge. Use the blocking-read path (use_callback_bridge=False) "
+                "if you need RETURN semantics.",
+                context=ErrorContext(task_name=source.spec.name, operation="record"),
+            )
+        if not source.is_configured:
+            raise NIDaqTaskStateError(
+                f"record(use_callback_bridge=True) requires a configured session; "
+                f"task {source.spec.name!r} is not configured",
+                context=ErrorContext(task_name=source.spec.name, operation="record"),
+            )
+        if source.is_started:
+            raise NIDaqTaskStateError(
+                f"record(use_callback_bridge=True) requires an unstarted session; "
+                f"task {source.spec.name!r} is already started. "
+                f"Use open_task(spec, autostart=False) to defer the start.",
+                context=ErrorContext(task_name=source.spec.name, operation="record"),
+            )
+    elif not source.is_started:
+        raise NIDaqTaskStateError(
+            f"record() requires a started session; task {source.spec.name!r} is not running",
+            context=ErrorContext(task_name=source.spec.name, operation="record"),
+        )
+    timing = source.spec.timing
+    if timing is None or getattr(timing, "mode", None) == "on_demand":
+        raise NIDaqTaskStateError(
+            "record() requires a hardware-clocked task; use record_polled() for "
+            "timing=None or AcquisitionMode.ON_DEMAND",
+            context=ErrorContext(task_name=source.spec.name, operation="record"),
+        )
+
+
 @asynccontextmanager
 async def record(
     source: DaqSession,
@@ -132,8 +179,18 @@ async def record(
     safe to read after exit (the values are frozen on the way out).
 
     Args:
-        source: Started :class:`DaqSession`. The recorder does not start the
-            session — wrap with :func:`~nidaqlib.tasks.open_task` first.
+        source: A configured :class:`DaqSession`. Required state depends on
+            ``use_callback_bridge``:
+
+            * ``use_callback_bridge=False`` (Option A) — ``source`` must be
+              **started**; wrap with :func:`~nidaqlib.tasks.open_task` (the
+              default ``autostart=True``).
+            * ``use_callback_bridge=True`` (Option B / §11.3.2) — ``source``
+              must be **configured but not yet started**; pass
+              ``autostart=False`` to ``open_task`` and let the recorder own
+              the start. NI rejects buffer-event registration on a running
+              task with -200960 ("Register all your DAQmx software events
+              prior to starting the task").
         chunk_size: Samples per channel per emitted :class:`DaqBlock`.
         timeout: Per-read timeout in seconds (Option A only — Option B reads
             from the NI buffer with timeout 0).
@@ -151,25 +208,19 @@ async def record(
             worker thread).
 
     Raises:
-        NIDaqTaskStateError: ``source`` is not started.
+        NIDaqTaskStateError: ``source`` is in the wrong lifecycle state for
+            the selected mode (see ``source`` argument above).
         ValueError: ``chunk_size < 1`` or ``buffer_size < 1``.
     """
     if chunk_size < 1:
         raise ValueError(f"chunk_size must be >= 1, got {chunk_size!r}")
     if buffer_size < 1:
         raise ValueError(f"buffer_size must be >= 1, got {buffer_size!r}")
-    if not source.is_started:
-        raise NIDaqTaskStateError(
-            f"record() requires a started session; task {source.spec.name!r} is not running",
-            context=ErrorContext(task_name=source.spec.name, operation="record"),
-        )
-    timing = source.spec.timing
-    if timing is None or getattr(timing, "mode", None) == "on_demand":
-        raise NIDaqTaskStateError(
-            "record() requires a hardware-clocked task; use record_polled() for "
-            "timing=None or AcquisitionMode.ON_DEMAND",
-            context=ErrorContext(task_name=source.spec.name, operation="record"),
-        )
+    _validate_record_state(
+        source,
+        error_policy=error_policy,
+        use_callback_bridge=use_callback_bridge,
+    )
 
     summary = AcquisitionSummary()
     tx, rx = anyio.create_memory_object_stream[DaqBlock](max_buffer_size=buffer_size)
@@ -360,23 +411,32 @@ async def _start_bridge_producer(
 ) -> None:
     """Wire up the §11.3.2 driver-thread → ``queue.SimpleQueue`` bridge.
 
-    The shutdown protocol is split between this function (which spawns the
-    drainer + cleanup task) and the recorder's enclosing task group:
+    Startup protocol (NI ordering — must match exactly):
 
-    1. Unregister the NI callback FIRST (no new chunks enqueue).
-    2. Put a sentinel on the queue (drainer wakes from ``queue.get``).
-    3. Await the drainer's exit (no leaked worker thread).
-    4. Stop / close the task — handled by the outer ``open_task`` exit.
+    1. Register the NI callback (task is configured but NOT yet started — NI
+       rejects -200960 if the task is running).
+    2. Start the NI task (``source.start()``).
+    3. Spawn drainer + cleanup tasks.
 
-    The sequence is mandatory and ordered (design doc §9.2 / §11.3.2).
+    Shutdown protocol (run in this function's cleanup task; the outer
+    ``open_task`` exit then runs ``session.close`` which is a no-op for
+    the already-stopped task):
+
+    1. Stop the NI task — NI rejects unregister on a running task with
+       -200986. After stop returns, no more callbacks fire.
+    2. Unregister the NI callback.
+    3. Put a sentinel on the queue (drainer wakes from ``queue.get``).
+    4. Await the drainer's exit (no leaked worker thread).
+
+    Both sequences are mandatory and ordered (design doc §9.2 / §11.3.2).
     """
     chunk_q: queue.SimpleQueue[object] = queue.SimpleQueue()
     drain_done = anyio.Event()
 
-    # Strong reference held both on the session (via _set_callback_handle)
-    # and in this closure scope; NI stores the wrapped callback as a raw C
-    # function pointer, so two strong refs is the belt-and-braces fix for
-    # the GC seam called out in §11.3.2.
+    # The user callback (`_on_buffer`) is held by this closure scope for the
+    # lifetime of the bridge. The NI-side wrapper that NI stores as a raw C
+    # function pointer is kept alive by the backend's _callback_wrappers
+    # dict (keyed by id(task)) — see backend/nidaqmx_backend.py and §11.3.2.
     def _on_buffer(n: int) -> None:
         # Runs on a driver thread. No anyio. The driver guarantees `n`
         # samples are available; pull them with timeout=0 so a stop_task
@@ -391,14 +451,29 @@ async def _start_bridge_producer(
             return
         chunk_q.put_nowait(arr)
 
-    # Register on the backend, retain the handle on the session.
+    # NI ordering: register the buffer event BEFORE starting the task.
+    # `source` enters this function configured-but-not-started; record()
+    # has already validated that. After registration, start the task so the
+    # callback begins firing and the §8.7 wall-clock anchor lands on the
+    # session.
     handle = await run_sync(
         source._backend.register_every_n_samples,  # pyright: ignore[reportPrivateUsage]
         source.raw_task,
         chunk_size,
         _on_buffer,
     )
-    source._set_callback_handle(handle)  # pyright: ignore[reportPrivateUsage]
+    try:
+        await source.start()
+    except BaseException:
+        # If start fails, unregister so the outer close() can run cleanly
+        # without an orphan callback firing against a torn-down task.
+        with anyio.CancelScope(shield=True):
+            await run_sync(
+                source._backend.unregister_every_n_samples,  # pyright: ignore[reportPrivateUsage]
+                source.raw_task,
+                handle,
+            )
+        raise
 
     async def _drain() -> None:
         try:
@@ -430,12 +505,23 @@ async def _start_bridge_producer(
             await anyio.sleep_forever()
         finally:
             with anyio.CancelScope(shield=True):
+                # NI ordering on the way out:
+                #   1. stop_task — NI rejects unregister on a running task
+                #      with -200986. After stop returns, in-flight callbacks
+                #      have completed and no new ones fire, so the
+                #      "callback races sentinel" concern from the original
+                #      design (unregister-first) cannot occur.
+                #   2. unregister — drops NI's reference to the wrapper.
+                #   3. sentinel — wakes the drainer from chunk_q.get().
+                #   4. drain_done — wait for the drainer to exit cleanly.
+                # session.close() checks ``_started`` before stop_task, so
+                # the outer open_task exit will not stop again.
+                await source.stop()
                 await run_sync(
                     source._backend.unregister_every_n_samples,  # pyright: ignore[reportPrivateUsage]
                     source.raw_task,
                     handle,
                 )
-                source._set_callback_handle(None)  # pyright: ignore[reportPrivateUsage]
                 chunk_q.put_nowait(_SENTINEL)
                 await drain_done.wait()
 

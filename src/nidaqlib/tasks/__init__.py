@@ -22,14 +22,15 @@ async def open_task(
     *,
     backend: DaqBackend | None = None,
     timeout: float = 10.0,  # noqa: ASYNC109 — NI per-call timeout, not coroutine
+    autostart: bool = True,
     confirm_start: bool = False,
 ) -> AsyncGenerator[DaqSession]:
-    """Open a :class:`DaqSession` for ``spec`` and start it.
+    """Open a :class:`DaqSession` for ``spec`` and (optionally) start it.
 
-    The session is started on entry and closed on exit (whether the body
-    succeeds or raises). Mirrors the ecosystem ``open_device`` shape used by
-    ``alicatlib`` and ``sartoriuslib``, but the object being opened is a DAQ
-    task, not a serial device.
+    The session is closed on exit (whether the body succeeds or raises).
+    Mirrors the ecosystem ``open_device`` shape used by ``alicatlib`` and
+    ``sartoriuslib``, but the object being opened is a DAQ task, not a
+    serial device.
 
     Args:
         spec: Declarative :class:`TaskSpec` to materialise.
@@ -38,11 +39,20 @@ async def open_task(
             tests typically pass a
             :class:`~nidaqlib.backend.fake.FakeDaqBackend` here.
         timeout: Default per-operation timeout, in seconds.
+        autostart: When ``True`` (default), the session is configured AND
+            started before the body runs. When ``False``, the session is
+            only configured — the caller is responsible for ``await
+            session.start()`` before any acquisition. Required for the
+            §11.3.2 callback bridge, which must register the buffer event
+            before NI's ``task.start()``; pass the unstarted session to
+            :func:`~nidaqlib.streaming.block.record` with
+            ``use_callback_bridge=True`` and the recorder owns the start.
         confirm_start: Required when starting the task can actuate hardware
-            immediately (for example counter-output pulse trains).
+            immediately (for example counter-output pulse trains). Only
+            consulted when ``autostart=True``.
 
     Yields:
-        A started :class:`DaqSession`.
+        A configured :class:`DaqSession`. Started iff ``autostart=True``.
     """
     if backend is None:
         # Local import — keeps the production `nidaqmx` import off the
@@ -51,8 +61,14 @@ async def open_task(
 
         backend = NidaqmxBackend()
     session = DaqSession(spec, backend, timeout=timeout)
+    if autostart:
+        # Validate up-front so a missing ``confirm_start`` for an actuating
+        # task fails before any backend resources are allocated.
+        session._validate_start_safety(confirm=confirm_start)
     try:
-        await session.start(confirm=confirm_start)
+        await session.configure()
+        if autostart:
+            await session.start(confirm=confirm_start)
         yield session
     finally:
         await session.close()

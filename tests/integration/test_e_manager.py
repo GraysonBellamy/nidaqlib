@@ -10,27 +10,22 @@ Each test starts with a clean :class:`DaqManager` and ends with an
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-import anyio
 import pytest
 
 from nidaqlib import (
     DaqManager,
-    DaqReading,
     ErrorPolicy,
     NIDaqError,
     NIDaqResourceError,
     TaskSpec,
     Timing,
-    record_polled,
 )
 
 from .conftest import assert_plausible_temperature, make_tc_channel
 
 if TYPE_CHECKING:
-    from nidaqlib.manager import TaskResult
-
     from .conftest import TcHardwareConfig
 
 
@@ -152,21 +147,39 @@ async def test_e4_invalid_spec_returns_taskresult_error(
 
 
 # ---------------------------------------------------------------------------
-# E5 — record_polled fan-out across two single-channel tasks (best-effort)
+# E5 — module-level reservation preflight on TC modules (NI 9211/9212/9213/9214)
 # ---------------------------------------------------------------------------
 
 
-async def test_e5_record_polled_manager_fanout(
+async def test_e5_module_reservation_preflight_on_tc_module(
     tc_config: TcHardwareConfig,
 ) -> None:
-    """``record_polled(manager, ...)`` emits a per-task ``TaskResult`` mapping.
+    """The manager's preflight rejects two tasks on a whole-module-reserved device.
 
-    Uses two **single-channel on-demand** tasks. Some TC modules treat the
-    whole module as one resource and reject a second concurrent task — if
-    that happens, the test is xfailed dynamically with the NI error code.
+    NI 9211/9212/9213/9214 reserve the whole module per task — a second
+    concurrent task targeting any AI channel on the same module is
+    rejected by NI at ``start()`` time with -50103. The manager's
+    preflight queries ``backend.device_info`` on the first ``add()``,
+    notices the product type is in the module-reservation set, and raises
+    :class:`NIDaqResourceError` at the **second** ``add()``. The error
+    message names the offending device(s) and references §15.3.
+
+    Skips if the operator's hardware is not in the known TC-reservation set
+    — there's nothing to assert on a non-TC module.
     """
     if tc_config.channel_secondary is None:
         pytest.skip("two single-channel manager tasks need a secondary channel")
+
+    from nidaqlib.backend.nidaqmx_backend import NidaqmxBackend
+    from nidaqlib.manager import _is_module_reserved_product  # pyright: ignore[reportPrivateUsage]
+
+    backend = NidaqmxBackend()
+    info = backend.device_info(tc_config.device)
+    if info is None or not _is_module_reserved_product(info.product_type):  # pyright: ignore[reportPrivateUsage]
+        pytest.skip(
+            f"device {tc_config.device!r} (product_type={info.product_type if info else None!r}) "
+            f"is not in the module-reservation set; preflight test does not apply"
+        )
 
     spec_a = TaskSpec(
         name="poll_a",
@@ -183,38 +196,7 @@ async def test_e5_record_polled_manager_fanout(
         ],
     )
 
-    rate_hz = 4.0
-    duration_s = 2.0
-
     async with DaqManager() as mgr:
         await mgr.add("poll_a", spec_a)
-        await mgr.add("poll_b", spec_b)
-        try:
-            await mgr.start()
-        except BaseExceptionGroup as group:
-            pytest.xfail(
-                f"NI rejected two concurrent tasks on the same TC module: {group.exceptions!r}"
-            )
-
-        ticks: list[dict[str, TaskResult[DaqReading]]] = []
-        async with record_polled(mgr, rate_hz=rate_hz, buffer_size=8) as (rx, summary):
-            deadline = anyio.current_time() + duration_s
-            async for payload in rx:
-                # Manager mode emits a Mapping[str, TaskResult[DaqReading]].
-                tick = cast(
-                    "dict[str, TaskResult[DaqReading]]",
-                    dict(payload),  # type: ignore[arg-type]
-                )
-                ticks.append(tick)
-                if anyio.current_time() >= deadline:
-                    break
-
-    assert ticks, "manager fan-out emitted no ticks"
-    for tick in ticks:
-        assert set(tick) == {"poll_a", "poll_b"}
-        for name, result in tick.items():
-            assert result.ok, f"{name}: {result.error!r}"
-            reading = cast("DaqReading", result.value)
-            for ch, value in reading.values.items():
-                assert_plausible_temperature(float(value), tc_config, where=f"E5.{name}.{ch}")
-    assert summary.errors_observed == 0
+        with pytest.raises(NIDaqResourceError, match="module-level reservation"):
+            await mgr.add("poll_b", spec_b)

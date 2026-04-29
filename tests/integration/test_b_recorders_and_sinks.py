@@ -170,10 +170,16 @@ async def test_b2_record_polled_to_jsonl(
 
     lines = jsonl_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == written
-    # Every line round-trips through json.loads.
+    # Every line round-trips through json.loads. JsonlSink uses the same
+    # flattened row layout as the SQLite/Parquet sinks (reading_to_row):
+    # one column per channel, plus device/task/timestamp/elapsed metadata.
     for line in lines:
         parsed = json.loads(line)
-        assert "values" in parsed
+        assert parsed["device"] == "tc_on_demand"
+        assert parsed["task"] == "tc_on_demand"
+        assert "monotonic_ns" in parsed
+        assert "primary" in parsed
+        assert parsed["primary_unit"] == "degC"
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +224,11 @@ async def test_b3_record_blocks_to_parquet(
     for b in seen:
         assert_close_float(b.sample_rate_hz, tc_config.rate_hz, where="B3.sample_rate_hz")
         assert_close_float(b.dt_s, 1.0 / tc_config.rate_hz, where="B3.dt_s")
-    # Parquet got every block.
+    # Parquet long-form: chunk_size rows per block, one row group per block.
     table = pq.read_table(parquet_path)
-    assert table.num_rows == target_blocks
+    assert table.num_rows == target_blocks * chunk_size
+    pf = pq.ParquetFile(parquet_path)
+    assert pf.metadata.num_row_groups == target_blocks
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +293,10 @@ async def test_b5_record_with_callback_bridge(
 
     seen: list[DaqBlock] = []
     async with (
-        open_task(tc_spec_continuous) as session,
+        # autostart=False — the bridge needs to register the buffer event
+        # before NI starts the task (NI rejects post-start registration with
+        # -200960). record(use_callback_bridge=True) owns the start.
+        open_task(tc_spec_continuous, autostart=False) as session,
         record(
             session,
             chunk_size=chunk_size,
@@ -366,3 +377,157 @@ async def test_b7_csv_sink_accept_blocks_scalarizes(
     assert len(rows) - 1 == expected_data_rows, (
         f"expected {expected_data_rows} data rows + header, got {len(rows)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# B8 — long-run drift / leak check
+# ---------------------------------------------------------------------------
+
+
+async def test_b8_long_run_polled_drift(
+    tc_spec_on_demand: TaskSpec,
+    hw_tmp_dir: Path,
+) -> None:
+    """``record_polled`` for ~10 s into SQLite shows monotonic timestamps and no drops.
+
+    Bench-day A1-A6 / B1-B7 each run 2-3 s; an accumulator or GC-stall bug
+    would only show up over a longer window. 10 s of 5 Hz sampling is
+    enough to surface cumulative drift without making the suite slow.
+
+    Asserts:
+
+    - Producer emits ~``rate_hz * duration`` readings within 5 % of the
+      expected count (NI scheduling jitter is the main contributor).
+    - ``monotonic_ns`` is strictly increasing across the entire run.
+    - SQLite row count matches the reading count.
+    - ``summary.errors_observed == 0`` and ``summary.blocks_dropped == 0``.
+    """
+    rate_hz = 5.0
+    duration_s = 10.0
+    db_path = hw_tmp_dir / "b8.sqlite"
+
+    async with (
+        open_task(tc_spec_on_demand) as session,
+        SqliteSink(db_path) as sink,
+        record_polled(session, rate_hz=rate_hz, buffer_size=8) as (rx, summary),
+    ):
+        readings: list[DaqReading] = []
+        deadline = anyio.current_time() + duration_s
+        async for payload in rx:
+            # Session-mode record_polled emits DaqReading; the union return
+            # type is for the manager-mode overload (Mapping[str, ...]),
+            # which we don't take here.
+            reading = cast("DaqReading", payload)
+            readings.append(reading)
+            await sink.write_many([reading])
+            if anyio.current_time() >= deadline:
+                break
+
+    expected = int(rate_hz * duration_s)
+    # Allow ±5 % — first/last partial intervals + scheduler jitter.
+    assert abs(len(readings) - expected) <= max(2, expected // 20), (
+        f"expected ~{expected} readings, got {len(readings)}"
+    )
+    monotonic_values = [r.monotonic_ns for r in readings]
+    assert monotonic_values == sorted(monotonic_values), (
+        "monotonic_ns should be strictly increasing over the long run"
+    )
+    assert summary.errors_observed == 0
+    assert summary.blocks_dropped == 0
+    with sqlite3.connect(db_path) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM readings").fetchone()[0]
+    assert count == len(readings)
+
+
+# ---------------------------------------------------------------------------
+# B9 — cancellation mid-bridge cleanly tears down on real hardware
+# ---------------------------------------------------------------------------
+
+
+async def test_b9_bridge_cancel_mid_stream_clean_unwind(
+    tc_config: TcHardwareConfig,
+    tc_spec_continuous: TaskSpec,
+) -> None:
+    """Cancelling a bridge-mode ``record`` mid-stream completes cleanly within budget.
+
+    The unit suite verifies the operation-log ordering against the fake
+    backend; this test verifies the same shutdown sequence does not hang or
+    raise on real NI. Wraps the body in ``anyio.fail_after(5.0)`` so a
+    deadlock surfaces as a test failure rather than a hung suite.
+
+    Concretely: we let the bridge produce a few blocks, then break out of
+    the consumer loop. The recorder ``__aexit__`` runs the §11.3.2
+    shutdown (stop → unregister → sentinel → drain), and the outer
+    ``open_task`` exits. Both must finish within ``fail_after``.
+    """
+    chunk_size = max(2, int(tc_config.rate_hz // 2))
+
+    received = 0
+    with anyio.fail_after(5.0):
+        async with (
+            open_task(tc_spec_continuous, autostart=False) as session,
+            record(
+                session,
+                chunk_size=chunk_size,
+                use_callback_bridge=True,
+            ) as (rx, summary),
+        ):
+            async for _block in rx:
+                received += 1
+                if received >= 2:
+                    # Break out → cancel scope → bridge cleanup must run.
+                    break
+
+    assert received >= 2
+    assert summary.errors_observed == 0
+
+
+# ---------------------------------------------------------------------------
+# B10 — two-channel block read via callback bridge
+# ---------------------------------------------------------------------------
+
+
+async def test_b10_bridge_two_channel_blocks(
+    tc_config: TcHardwareConfig,
+    tc_spec_continuous_two_channel: TaskSpec,
+) -> None:
+    """The bridge reshapes two-channel buffers into ``(2, chunk_size)`` blocks.
+
+    B5 only exercises one channel. The reshape path
+    (:func:`_build_block_from_array`) interleaves NI's flat sample buffer
+    by channel — this is where a transposition bug would silently swap
+    channel data. Two-channel coverage on real hardware confirms the
+    reshape is right.
+    """
+    chunk_size = max(2, int(tc_config.rate_hz // 2))
+    target_blocks = 3
+
+    seen: list[DaqBlock] = []
+    async with (
+        open_task(tc_spec_continuous_two_channel, autostart=False) as session,
+        record(
+            session,
+            chunk_size=chunk_size,
+            use_callback_bridge=True,
+        ) as (rx, _summary),
+    ):
+        async for block in rx:
+            seen.append(block)
+            if len(seen) >= target_blocks:
+                break
+
+    assert len(seen) == target_blocks
+    for b in seen:
+        assert b.data.shape == (2, chunk_size)
+        assert b.channels == ("primary", "secondary")
+        # Both channels are wired to room-temperature TCs; values should
+        # be sane and the per-channel mean should track each other within
+        # a few degrees (same lab air).
+        ch0_mean = float(b.data[0].mean())
+        ch1_mean = float(b.data[1].mean())
+        assert_plausible_temperature(ch0_mean, tc_config, where="B10.ch0_mean")
+        assert_plausible_temperature(ch1_mean, tc_config, where="B10.ch1_mean")
+        assert abs(ch0_mean - ch1_mean) < 10.0, (
+            f"two-channel ambient should agree within 10 degC; "
+            f"got ch0={ch0_mean:.2f}, ch1={ch1_mean:.2f}"
+        )

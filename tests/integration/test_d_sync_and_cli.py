@@ -4,11 +4,11 @@ The sync facade is exercised end-to-end via :class:`Daq.open_task` running
 in a worker thread (so we do not collide with the integration suite's
 top-level event loop).
 
-The :mod:`nidaqlib.cli` tools currently build :class:`AnalogInputVoltage`
-specs internally — they cannot drive a TC-only module. ``test_d3`` runs
-``nidaq-info`` (which works on any device class) and asserts the device
-shows up; the ``nidaq-read`` / ``nidaq-capture`` gap is captured as an
-``xfail`` so the limitation is durable rather than silent.
+The :mod:`nidaqlib.cli` tools default to :class:`AnalogInputVoltage`
+specs but accept ``--thermocouple-type`` for TC-only modules. ``test_d3``
+verifies that without the flag, ``nidaq-read`` against a TC module fails
+with a typed NI error (regression tripwire); ``test_d4`` verifies that
+``--thermocouple-type K`` against the same module succeeds end-to-end.
 """
 
 from __future__ import annotations
@@ -125,28 +125,54 @@ def test_d2_nidaq_list_device_json_lists_ai_channels(
 
 
 # ---------------------------------------------------------------------------
-# D3 — known limitation: nidaq-read / nidaq-capture build AI-voltage specs
+# D3 — without --thermocouple-type, nidaq-read on a TC module fails clearly
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason=(
-        "nidaq-read builds an AnalogInputVoltage spec internally; TC-only "
-        "modules (NI-9211/9212/9214) reject the channel type. Track this by "
-        "adding a --thermocouple-type option or a "
-        "separate nidaq-tc command."
-    ),
-    strict=False,
-)
-def test_d3_nidaq_read_one_shot_on_tc_module(
+def test_d3_nidaq_read_voltage_mode_rejected_on_tc_module(
     tc_config: TcHardwareConfig,
 ) -> None:
-    """``nidaq-read`` on a TC-only module is expected to fail today.
+    """``nidaq-read`` defaults to voltage AI; a TC-only module rejects it.
 
-    If this test ever starts passing, the failure mode has changed (e.g.
-    the CLI grew TC support, or the operator's module accepts voltage
-    AI). Either way, that's news worth surfacing.
+    Tripwire: if a future operator's module DOES accept voltage AI (e.g.
+    USB-6001), this test will start failing-as-passing — at which point the
+    failure mode has changed and the assertion below should be revisited.
+    Today (NI 9214 + 26.3 driver) the CLI exits non-zero with the NI rejection
+    surfaced on stderr.
     """
     proc = _run_cli("nidaqlib.cli.read", tc_config.channel_primary)
-    assert proc.returncode == 0, f"nidaq-read failed: {proc.stderr}"
-    assert tc_config.channel_primary in proc.stdout
+    assert proc.returncode != 0, (
+        "nidaq-read against a TC-only module unexpectedly succeeded; "
+        "either the module accepts voltage AI or the CLI now infers TC mode."
+    )
+    assert "nidaq-read:" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# D4 — with --thermocouple-type K, nidaq-read drives the same TC module
+# ---------------------------------------------------------------------------
+
+
+def test_d4_nidaq_read_thermocouple_mode(
+    tc_config: TcHardwareConfig,
+) -> None:
+    """``nidaq-read --thermocouple-type K`` returns a sane temperature.
+
+    Validates the CLI's TC mode end-to-end on real hardware. Default range
+    (-50 to 200 degC) covers room-temperature measurement.
+    """
+    proc = _run_cli(
+        "nidaqlib.cli.read",
+        tc_config.channel_primary,
+        "--thermocouple-type",
+        tc_config.tc_type,
+        "--json",
+    )
+    assert proc.returncode == 0, f"nidaq-read --thermocouple-type failed: {proc.stderr}"
+    payload = json.loads(proc.stdout)
+    values: dict[str, float] = payload["values"]
+    assert values, "no channel values returned"
+    (temperature,) = values.values()
+    assert_plausible_temperature(temperature, tc_config, where="D4.tc_read")
+    units: dict[str, str] = payload["units"]
+    assert all(u == "degC" for u in units.values()), units

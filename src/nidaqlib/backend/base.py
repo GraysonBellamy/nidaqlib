@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from nidaqlib.channels.base import ChannelSpec
+    from nidaqlib.system.models import DeviceInfo
     from nidaqlib.tasks.spec import TdmsLogging, Timing
     from nidaqlib.tasks.triggers import TriggerSpec
 
@@ -159,8 +160,21 @@ class DaqBackend(Protocol):
         """Unregister a previously-registered buffer-event callback.
 
         After this returns, the backend guarantees no further invocations of
-        the callback. MUST be called *before* :meth:`stop_task` on the same
-        task — see the §11.3.2 ordering invariants.
+        the callback. MUST be called *after* :meth:`stop_task` on the same
+        task — NI rejects unregister on a running task with -200986. See the
+        §11.3.2 ordering invariants for the full stop → unregister →
+        sentinel → drain sequence.
+        """
+        ...
+
+    def device_info(self, device: str) -> DeviceInfo | None:
+        """Return product / channel info for ``device``, or ``None`` if unknown.
+
+        Used by :class:`~nidaqlib.manager.DaqManager` preflight to detect
+        module-level reservation classes (e.g. NI 9211/9212/9213/9214 TC
+        modules reserve the whole module per task). Implementations MAY
+        return ``None`` when the device is unknown to the backend or when
+        no such information is available (e.g. the fake backend).
         """
         ...
 

@@ -60,7 +60,7 @@ async def test_happy_path() -> None:
     backend = FakeDaqBackend(read_block_default_shape=(1, 64))
     received: list[DaqBlock] = []
     async with (
-        open_task(_spec(), backend=backend) as session,
+        open_task(_spec(), backend=backend, autostart=False) as session,
         record(
             session,
             chunk_size=64,
@@ -95,7 +95,7 @@ async def test_clean_shutdown_drainer_blocked() -> None:
     backend = FakeDaqBackend(read_block_default_shape=(1, 64))
     pre_threads = {t.ident for t in threading.enumerate()}
     with anyio.fail_after(2.0):
-        async with open_task(_spec(), backend=backend) as session:
+        async with open_task(_spec(), backend=backend, autostart=False) as session:
             async with record(
                 session,
                 chunk_size=64,
@@ -116,14 +116,19 @@ async def test_clean_shutdown_drainer_blocked() -> None:
 
 
 @pytest.mark.anyio
-async def test_cancel_mid_stream_unregister_before_stop() -> None:
-    """Cancelling the consumer mid-stream unwinds with unregister BEFORE stop.
+async def test_cancel_mid_stream_stop_then_unregister_then_close() -> None:
+    """Cancelling the consumer mid-stream unwinds with stop → unregister → close.
 
-    Asserts the design-doc §11.3.2 ordering invariant via the
-    :class:`FakeDaqBackend.operations` log.
+    Real NI rejects ``register_every_n_samples_acquired_into_buffer_event(0,
+    None)`` on a running task with -200986 ("DAQmx software event cannot be
+    unregistered because the task is running"). The bridge therefore stops
+    the task FIRST — at which point in-flight callbacks have completed and
+    no new ones fire — then unregisters, then sentinels the drainer, then
+    closes. This test asserts that operation order on the
+    :class:`FakeDaqBackend` log.
     """
     backend = FakeDaqBackend(read_block_default_shape=(1, 32))
-    async with open_task(_spec(), backend=backend) as session:
+    async with open_task(_spec(), backend=backend, autostart=False) as session:
         with anyio.move_on_after(0.5):
             async with record(
                 session,
@@ -138,11 +143,62 @@ async def test_cancel_mid_stream_unregister_before_stop() -> None:
                         # Cancel by exiting the move_on_after scope — the
                         # next iteration of the consumer is interrupted.
                         await anyio.sleep(10.0)
-    # Ordering: unregister must precede stop, stop must precede close.
-    unreg_at = _operation_index(backend, "unregister_every_n_samples")
+    # NI-mandated ordering: stop precedes unregister (otherwise NI -200986);
+    # close happens last via the outer open_task exit.
     stop_at = _operation_index(backend, "stop_task")
+    unreg_at = _operation_index(backend, "unregister_every_n_samples")
     close_at = _operation_index(backend, "close_task")
-    assert unreg_at < stop_at < close_at
+    assert stop_at < unreg_at < close_at
+
+
+@pytest.mark.anyio
+async def test_register_must_precede_start() -> None:
+    """The bridge registers the buffer event BEFORE NI's ``task.start()``.
+
+    NI rejects ``register_every_n_samples_acquired_into_buffer_event`` when
+    the task is already running with status code -200960. The fake backend
+    enforces the same invariant (see
+    :meth:`FakeDaqBackend.register_every_n_samples`); this test asserts the
+    happy-path operation log puts ``register_every_n_samples`` before
+    ``start_task`` so a future regression in the bridge would be caught here
+    rather than only on real hardware.
+    """
+    backend = FakeDaqBackend(read_block_default_shape=(1, 16))
+    async with (
+        open_task(_spec(), backend=backend, autostart=False) as session,
+        record(
+            session,
+            chunk_size=16,
+            use_callback_bridge=True,
+        ) as (_stream, _summary),
+    ):
+        del session  # only the operation log matters
+    register_at = _operation_index(backend, "register_every_n_samples")
+    start_at = _operation_index(backend, "start_task")
+    assert register_at < start_at, (
+        f"register_every_n_samples (idx={register_at}) must precede "
+        f"start_task (idx={start_at}); op log: "
+        f"{[e.op for e in backend.operations]}"
+    )
+
+
+@pytest.mark.anyio
+async def test_register_after_start_rejected_by_fake_backend() -> None:
+    """Direct fake-backend assertion: post-start registration is rejected.
+
+    Mirrors NI's -200960 ("Register all your DAQmx software events prior to
+    starting the task"). Locks the invariant at the backend layer so a
+    refactor that bypasses ``record()`` cannot silently re-introduce the
+    bug.
+    """
+    from nidaqlib.errors import NIDaqBackendError
+
+    backend = FakeDaqBackend(read_block_default_shape=(1, 8))
+    async with open_task(_spec(), backend=backend) as session:
+        # autostart=True by default — task is started.
+        assert session.is_started
+        with pytest.raises(NIDaqBackendError, match=r"already started"):
+            backend.register_every_n_samples(session.raw_task, 8, lambda _n: None)
 
 
 @pytest.mark.anyio
@@ -158,7 +214,7 @@ async def test_callback_survives_gc() -> None:
     backend = FakeDaqBackend(read_block_default_shape=(1, 16))
     received: list[DaqBlock] = []
     async with (
-        open_task(_spec(), backend=backend) as session,
+        open_task(_spec(), backend=backend, autostart=False) as session,
         record(
             session,
             chunk_size=16,

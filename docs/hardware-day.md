@@ -33,7 +33,7 @@ A TC module **cannot** exercise — flag and skip:
 | `TriggerSpec` (analog edge, digital edge, reference) | TC modules expose no PFI / RTSI. |
 | Multi-task shared-clock acquisition (`DaqManager.start_synchronized`) | TC modules use implicit timing — no shared sample clock. |
 | High-rate stress on the §11.3.2 callback bridge | TC sample rates cap at ~14 S/s (9211) – ~75 S/s (9213). The unit suite already covers load, GC, and cancellation against the fake backend; today is plumbing-only. |
-| `nidaq-read` / `nidaq-capture` CLIs | They build `AnalogInputVoltage` specs internally. TC-only modules will reject the channel type. Captured as a non-strict `xfail` in `test_d3` — see [Block D](#block-d--sync-facade--cli-15-min). |
+| ~~`nidaq-read` / `nidaq-capture` CLIs~~ | Now supported via `--thermocouple-type J|K|T|E|N|R|S|B`. D3 keeps the voltage-mode-rejection tripwire; D4 covers the TC mode end-to-end. |
 
 ---
 
@@ -53,8 +53,15 @@ or container-only path.
 
 On any of those, install the bootstrap deb/rpm from
 [NI's downloads page](https://www.ni.com/en/support/downloads/drivers/download.ni-linux-device-drivers.html),
-`apt-get install ni-daqmx` (or `dnf install`), and skip straight to
-[Pre-flight](#pre-flight-15-min).
+`apt-get install ni-daqmx ni-tdms-bin` (or the `dnf` equivalents), and
+skip straight to [Pre-flight](#pre-flight-15-min).
+
+`ni-tdms-bin` is **not** a hard dependency of the `ni-daqmx` metapackage.
+Without it any task started with TDMS logging fails at `task.start()` with
+NI **-201310** ("TDMS support is not installed or is too old") — Block C
+and the F1 sidecar round-trip both depend on it. The package is small
+(~210 KB) and there's no reason to skip it on a host that can drive
+`ni-daqmx`.
 
 ### Unsupported hosts (Arch / CachyOS / etc.)
 
@@ -82,14 +89,16 @@ container, but `nipal.service` fails at the `modprobe nipalk` invocation and
 nothing downstream initialises (`nilsdev` segfaults; `libnidaqmx.so`
 loads but can't talk to a device node that was never created).
 
-### Status on this bench (CachyOS, kernel 7.0.1)
+### Status on this bench
 
-- 2026 Q2 NI Linux Device Drivers downloaded; the Ubuntu 22.04 bootstrap
-  deb (`ni-ubuntu2204-drivers-2026Q2.deb`) lives in `~/Downloads/NILinux2026Q2DeviceDrivers/`.
-- Distrobox path attempted and abandoned (see above).
-- **Next action**: stand up an Ubuntu 22.04 VM (libvirt + virt-manager) or
-  prep a bootable Ubuntu LTS USB. Hardware day stays parked until one
-  of those is ready.
+- Ubuntu 22.04 LTS VM (kernel 6.8.0-110-generic) stood up; `ni-daqmx`
+  26.3 + `ni-tdms-bin` 26.3 installed; `nipalk` / `nikal` kernel modules
+  loaded.
+- First full bench day completed against an NI 9214 in a cDAQ-9171
+  chassis. Current results: 35/35 hardware tests pass (no xfails after
+  follow-up fixes — see Block D and Block E); unit suite 265/265 green.
+  Findings rolled into the relevant blocks below and into
+  [`design.md`](design.md) §11.3.2 / §15.3.
 
 ---
 
@@ -159,6 +168,8 @@ present, and re-run.
 | A4 | `test_a4_raw_task_escape_hatch` | `session.raw_task` returns the underlying `nidaqmx.Task` immediately after `start`; channel count matches the spec. |
 | A5 | `test_a5_two_channel_poll` | Two-channel TC task; one `read_block` returns `(2, N)` data with the right channel order. |
 | A6 | `test_a6_poll_rejected_for_continuous_task` | The §9.2 lifecycle guard fires before NI sees the request — `poll()` on a started CONTINUOUS task raises `NIDaqTaskStateError`. |
+| A7 | `test_a7_stop_then_restart_same_session` | `stop()` + `start()` on the same session resumes acquisition; second `task_started_at` ≥ first; `read_block` works after the restart. |
+| A8 | `test_a8_invalid_sample_rate_rejected` | A 100 kHz request on a 9214 (max ~75 S/s) surfaces a typed `NIDaqError` with NI's code populated on `context.ni_error_code` — confirms the configuration error path is wired correctly through the wrapper. |
 
 ```bash
 uv run pytest tests/integration/test_a_session_lifecycle.py -v
@@ -178,9 +189,12 @@ uv run pytest tests/integration/test_a_session_lifecycle.py -v
 | B2 (×3) | `test_b2_record_polled_to_{sqlite,parquet,jsonl}` | Same shape as B1 into each row-oriented sink; round-trip via `sqlite3.connect` / `pyarrow.parquet.read_table` / line-by-line `json.loads`. |
 | B3 | `test_b3_record_blocks_to_parquet` | `record(chunk_size=…)` for 4 blocks. `block_index`/`first_sample_index` strictly increase by `chunk_size`; Parquet has one row group per block. |
 | B4 | `test_b4_polled_overflow_drop_oldest` | Producer ≫ consumer with `buffer_size=1` and `OverflowPolicy.DROP_OLDEST` → `summary.blocks_dropped > 0`. |
-| B5 | `test_b5_record_with_callback_bridge` | `use_callback_bridge=True` (the §11.3.2 path). Plumbing-only at TC rates. |
+| B5 | `test_b5_record_with_callback_bridge` | `use_callback_bridge=True` (the §11.3.2 path). Plumbing-only at TC rates. **Caller must use `open_task(spec, autostart=False)`** so the recorder can register the buffer event before NI starts the task — see [§11.3.2](design.md#1132-hardware-timed-high-rate). |
 | B6 | `test_b6_csv_sink_refuses_blocks_by_default` | `CsvSink(accept_blocks=False)` raises `NIDaqSinkSchemaError` on the first `write(block)` — §14.1's default-refusal. |
 | B7 | `test_b7_csv_sink_accept_blocks_scalarizes` | `CsvSink(accept_blocks=True)` writes one row per `(channel, sample)`. |
+| B8 | `test_b8_long_run_polled_drift` | 10 s `record_polled` at 5 Hz into SQLite; reading count within ±5 % of expected, monotonic timestamps strictly increasing, no errors / drops, SQLite row count matches. Catches accumulator / GC-stall bugs that escape the 2–3 s tests. |
+| B9 | `test_b9_bridge_cancel_mid_stream_clean_unwind` | Cancelling a bridge-mode `record` mid-stream completes within 5 s — confirms the §11.3.2 stop → unregister → sentinel → drain shutdown does not deadlock or raise on real NI. |
+| B10 | `test_b10_bridge_two_channel_blocks` | The bridge correctly reshapes a 2-channel buffer into `(2, chunk_size)` blocks. Two-channel coverage on real hardware confirms the per-channel layout in `_build_block_from_array` is right. |
 
 ```bash
 uv run pytest tests/integration/test_b_recorders_and_sinks.py -v
@@ -228,15 +242,18 @@ short-circuit detection has regressed. Cancel and check
 |---|---|---|
 | D1 | `test_d1_sync_facade_poll` | `Daq.open_task(spec).poll()` from a sync function dispatched through `anyio.to_thread.run_sync`. Returns a sane temperature. |
 | D2 (×3) | `test_d2_nidaq_{info_json_lists_device, list_human_lists_device, list_device_json_lists_ai_channels}` | The two CLI tools that *do* work on TC modules report the configured device + AI channels. Subprocess-invoked via `python -m nidaqlib.cli.{info,list}` so we don't depend on installed-script wrappers. |
-| D3 | `test_d3_nidaq_read_one_shot_on_tc_module` | **Documented limitation.** `xfail(strict=False)`. `nidaq-read` builds `AnalogInputVoltage` internally; TC-only modules reject it. If this test ever starts passing, the failure mode has changed and we should look. |
+| D3 | `test_d3_nidaq_read_voltage_mode_rejected_on_tc_module` | **Tripwire.** `nidaq-read` defaults to voltage AI; a TC-only module rejects it with a typed NI error and the CLI exits non-zero. If this ever starts passing without `--thermocouple-type`, the operator's module changed. |
+| D4 | `test_d4_nidaq_read_thermocouple_mode` | `nidaq-read --thermocouple-type K cDAQ1Mod1/ai1 --json` returns a sane temperature in `degC`. End-to-end validation of the CLI's TC mode (added after the bench day). |
 
 ```bash
 uv run pytest tests/integration/test_d_sync_and_cli.py -v
 ```
 
-**Action item carried out of D3**: file a follow-up to either add a
-`--thermocouple-type` flag to `nidaq-read` / `nidaq-capture`, or stand up a
-separate `nidaq-tc` CLI.
+**Done**: `--thermocouple-type J|K|T|E|N|R|S|B` is now wired into both
+`nidaq-read` and `nidaq-capture`. When set, the CLI builds a
+`ThermocoupleInput` channel (defaults `--min`/`--max` to `-50` / `200`
+degC) instead of `AnalogInputVoltage`. D4 covers the success path; D3
+is a tripwire that the voltage-mode rejection still happens.
 
 ---
 
@@ -250,15 +267,21 @@ separate `nidaq-tc` CLI.
 | E2 | `test_e2_refcount_holds_session_alive` | Duplicate `add` bumps refcount; one `remove` does not tear down; the second `remove` does. |
 | E3 | `test_e3_preflight_rejects_overlapping_channel` | Adding a second task that targets the same physical channel raises `NIDaqResourceError` (§15.3 best-effort preflight). |
 | E4 | `test_e4_invalid_spec_returns_taskresult_error` | Under `ErrorPolicy.RETURN`, a bogus device alias surfaces as `TaskResult.error` rather than raising; valid tasks remain operable. |
-| E5 | `test_e5_record_polled_manager_fanout` | Two single-channel on-demand tasks; `record_polled(manager, ...)` emits `Mapping[str, TaskResult[DaqReading]]` per tick. **Dynamic xfail**: if NI rejects two concurrent tasks on the same module, the test calls `pytest.xfail` with the NI error code so the constraint is captured rather than silently swallowed. |
+| E5 | `test_e5_module_reservation_preflight_on_tc_module` | Adding two tasks targeting the same TC module fails at `add()` time with `NIDaqResourceError` referencing module-level reservation. The manager queries `backend.device_info(...)` on first add, caches the product type, and rejects subsequent adds against any whole-module-reserved device (NI 9211/9212/9213/9214). Skips on hardware not in the known reservation set. |
 
 ```bash
 uv run pytest tests/integration/test_e_manager.py -v
 ```
 
-**Worth noticing**: E5 either passes (manager fan-out works on this
-module) or xfails with a specific NI error code. Both outcomes are
-data — note the error code for §15.3 documentation.
+**Background**: NI 9211/9212/9213/9214 reserve the **whole module** per
+task — two concurrent tasks targeting different AI channels on the same
+module are rejected at NI's `task.start()` with **NI -50103** "The
+specified resource is reserved." Originally observed on this bench
+(NI 9214, cDAQ-9171, 2026 Q2 driver) as a dynamic xfail. The manager
+now catches the conflict at `add()` time via `backend.device_info(...)`
++ a hardcoded module-reservation lookup, so the operator never reaches
+the NI -50103 path. Documented in
+[`design.md` §15.3](design.md#153-resource-model).
 
 ---
 
@@ -312,11 +335,13 @@ v0.1 set.
 
 ### Suggested follow-up tickets
 
-- **CLI ↔ TC**: implement `--thermocouple-type` for `nidaq-read` /
-  `nidaq-capture`, OR carve out `nidaq-tc`. Drives D3 from xfail to pass.
-- **Two-task TC manager**: if E5 xfailed, document the NI error code in
-  [`design.md` §15.3](design.md) so future operators know not to layer
-  two tasks on the same TC module.
+- **CLI ↔ TC**: ✅ done. `--thermocouple-type J|K|T|E|N|R|S|B` is wired
+  into both `nidaq-read` and `nidaq-capture`. Covered by D4.
+- ✅ **Two-task TC manager**: done. Manager preflight now rejects at
+  `add()` with a typed `NIDaqResourceError` for products in the
+  module-reservation set (`NI 9211/9212/9213/9214`). E5 covers it on
+  real hardware. NI -50103 details and the reservation lookup live in
+  [`design.md` §15.3](design.md).
 - **Higher-rate hardware coverage**: the §11.3.2 callback bridge (B5) is
   smoke-tested only at TC rates. When a higher-rate module (USB-6001,
   PCIe-6353-class) becomes available, add a Block-B-equivalent that

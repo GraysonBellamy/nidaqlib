@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
 
     from nidaqlib.channels.base import ChannelSpec
+    from nidaqlib.system.models import DeviceInfo
     from nidaqlib.tasks.spec import TdmsLogging, Timing
     from nidaqlib.tasks.triggers import TriggerSpec
 
@@ -131,6 +132,7 @@ class FakeDaqBackend:
         """Append-only log of backend calls. Tests assert ordering against this."""
 
         self._sim_threads: list[threading.Thread] = []
+        self._device_info: dict[str, DeviceInfo] = {}
 
     # -- Task lifecycle -------------------------------------------------------
 
@@ -305,9 +307,24 @@ class FakeDaqBackend:
     ) -> _FakeTask:
         """Stash ``callback`` on the task. Returns ``task`` as the handle.
 
+        Mirrors NI's ordering invariant: registration must precede
+        ``task.start()``. Real NI rejects post-start registration with
+        -200960 ("Register all your DAQmx software events prior to starting
+        the task"); the fake raises an analogous
+        :class:`NIDaqBackendError` so the unit suite catches violations
+        that the hardware would otherwise surface only at integration.
+
         Raises:
-            NIDaqBackendError: A callback is already registered.
+            NIDaqBackendError: A callback is already registered, or the task
+                has already been started.
         """
+        if task.started:
+            raise NIDaqBackendError(
+                f"task {task.name!r} is already started; "
+                "register_every_n_samples must run before start_task "
+                "(NI rejects post-start registration with -200960)",
+                context=ErrorContext(task_name=task.name, operation="register_every_n_samples"),
+            )
         if task.callback is not None:
             raise NIDaqBackendError(
                 f"task {task.name!r} already has a buffer-event callback",
@@ -319,11 +336,57 @@ class FakeDaqBackend:
         return task
 
     def unregister_every_n_samples(self, task: _FakeTask, handle: Any) -> None:
-        """Clear the buffer-event callback on ``task``."""
+        """Clear the buffer-event callback on ``task``.
+
+        Mirrors NI's ordering invariant: unregistration requires the task
+        to be stopped. Real NI rejects post-running unregister with -200986
+        ("DAQmx software event cannot be unregistered because the task is
+        running"); the fake raises an analogous
+        :class:`NIDaqBackendError` so the unit suite catches violations
+        that real hardware would otherwise surface only at integration.
+
+        Raises:
+            NIDaqBackendError: The task is still running.
+        """
         del handle
+        if task.started:
+            raise NIDaqBackendError(
+                f"task {task.name!r} is still running; "
+                "unregister_every_n_samples must run after stop_task "
+                "(NI rejects post-running unregister with -200986)",
+                context=ErrorContext(task_name=task.name, operation="unregister_every_n_samples"),
+            )
         task.callback = None
         task.callback_n = 0
         self.operations.append(_Operation("unregister_every_n_samples", task.name))
+
+    # -- Discovery / preflight ----------------------------------------------
+
+    def device_info(self, device: str) -> DeviceInfo | None:
+        """Return scripted ``DeviceInfo`` for ``device`` if registered, else ``None``.
+
+        Tests register product types via :meth:`register_device_info` so the
+        manager's module-level preflight can be exercised against the fake.
+        Default behaviour (no registration) returns ``None``, matching the
+        Protocol's "unknown device" semantics.
+        """
+        return self._device_info.get(device)
+
+    def register_device_info(self, device: str, *, product_type: str) -> None:
+        """Scripted DeviceInfo for tests of the manager's module-level preflight."""
+        from nidaqlib.system.models import DeviceInfo as _DeviceInfo  # noqa: PLC0415
+
+        self._device_info[device] = _DeviceInfo(
+            name=device,
+            product_type=product_type,
+            serial_number=None,
+            ai_physical_channels=(),
+            ao_physical_channels=(),
+            di_lines=(),
+            do_lines=(),
+            ci_physical_channels=(),
+            co_physical_channels=(),
+        )
 
     # -- Test helpers --------------------------------------------------------
 
