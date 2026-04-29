@@ -25,6 +25,7 @@ from nidaqlib import (
     AcquisitionMode,
     AnalogInputVoltage,
     DaqBlock,
+    NIDaqTaskStateError,
     TaskSpec,
     Timing,
     open_task,
@@ -177,3 +178,14 @@ async def test_callback_survives_gc() -> None:
                 if len(received) >= 5:
                     break
     assert len(received) == 5
+
+
+@pytest.mark.anyio
+async def test_close_refuses_active_callback_bridge() -> None:
+    """Direct close cannot bypass the recorder's ordered bridge shutdown."""
+    backend = FakeDaqBackend(read_block_default_shape=(1, 16))
+    async with open_task(_spec(), backend=backend) as session:
+        session._set_callback_handle(object())  # pyright: ignore[reportPrivateUsage]
+        with pytest.raises(NIDaqTaskStateError, match="callback bridge"):
+            await session.close()
+        session._set_callback_handle(None)  # pyright: ignore[reportPrivateUsage]

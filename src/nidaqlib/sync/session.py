@@ -49,6 +49,10 @@ class SyncDaqSession:
         """The underlying backend task handle (escape hatch — design §7.4)."""
         return self._session.raw_task
 
+    def start(self, *, confirm: bool = False) -> None:
+        """Start or restart the underlying task."""
+        self._portal.call(self._session.start, confirm=confirm)
+
     def stop(self) -> None:
         """Stop the underlying task. Idempotent."""
         self._portal.call(self._session.stop)

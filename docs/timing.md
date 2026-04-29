@@ -23,9 +23,14 @@ Timing(rate_hz=1_000.0, mode=AcquisitionMode.FINITE, samples_per_channel=10_000)
 Timing(rate_hz=10_000.0, source="/Dev1/PFI0")
 ```
 
-Pass `Timing` to a `TaskSpec`'s `timing=` field. Leaving `timing=None`
-selects software-timed, single-sample-per-call behaviour
-(`AcquisitionMode.ON_DEMAND` semantics) — useful for low-rate polling.
+Pass `Timing` to a `TaskSpec`'s `timing=` field for hardware-clocked
+finite or continuous acquisition. Leaving `timing=None` selects
+software-timed, single-sample-per-call behaviour — useful for low-rate
+polling with `poll()` or `record_polled()`.
+
+`AcquisitionMode.ON_DEMAND` is accepted as an explicit software-polled
+marker and does **not** configure NI sample-clock timing. Prefer
+`timing=None` unless you need the marker for serialized specs.
 
 ## Triggers
 

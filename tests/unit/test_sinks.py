@@ -226,6 +226,31 @@ async def test_sqlite_separate_tables_per_shape(tmp_path: Path) -> None:
         conn.close()
 
 
+@pytest.mark.anyio
+async def test_sqlite_quotes_channel_derived_columns(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    reading = DaqReading(
+        device="dev1",
+        task="dev1",
+        values={'bad"column': 1.0},
+        units={'bad"column': "V"},
+        requested_at=now,
+        received_at=now,
+        midpoint_at=now,
+        monotonic_ns=10,
+        elapsed_s=0.001,
+    )
+    out = tmp_path / "quoted.sqlite"
+    async with SqliteSink(out) as sink:
+        await sink.write_many([reading])
+
+    conn = sqlite3.connect(out)
+    try:
+        assert conn.execute('SELECT "bad""column" FROM readings').fetchone()[0] == 1.0
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Parquet
 # ---------------------------------------------------------------------------

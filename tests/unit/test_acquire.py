@@ -35,6 +35,36 @@ async def test_acquire_returns_block_and_stops_task() -> None:
 
 
 @pytest.mark.anyio
+async def test_finite_session_can_restart_after_acquire() -> None:
+    """``acquire`` stops but does not poison the configured task for reuse."""
+    spec = TaskSpec(
+        name="finite_ai",
+        channels=[AnalogInputVoltage(physical_channel="Dev1/ai0")],
+        timing=Timing(rate_hz=1000.0, mode=AcquisitionMode.FINITE, samples_per_channel=2),
+    )
+    backend = FakeDaqBackend(
+        blocks={
+            "finite_ai": [
+                np.zeros((1, 2), dtype=np.float64),
+                np.ones((1, 2), dtype=np.float64),
+            ]
+        },
+    )
+    async with open_task(spec, backend=backend) as session:
+        first = await session.acquire(samples_per_channel=2)
+        assert not session.is_started
+        await session.start()
+        second = await session.acquire(samples_per_channel=2)
+
+    assert first.block_index == 0
+    assert second.block_index == 0
+    ops = [op.op for op in backend.operations]
+    assert ops.count("create_task") == 1
+    assert ops.count("start_task") == 2
+    assert ops.count("stop_task") == 2
+
+
+@pytest.mark.anyio
 async def test_acquire_rejects_continuous_task() -> None:
     """``acquire`` requires ``Timing.mode == FINITE``."""
     spec = TaskSpec(

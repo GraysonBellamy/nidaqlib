@@ -348,10 +348,12 @@ class NidaqmxBackend:
         from nidaqmx.constants import AcquisitionType  # noqa: PLC0415
         from nidaqmx.constants import Edge as NIEdge  # noqa: PLC0415
 
+        if timing.mode is AcquisitionMode.ON_DEMAND:
+            return
+
         mode_map = {
             AcquisitionMode.FINITE: AcquisitionType.FINITE,
             AcquisitionMode.CONTINUOUS: AcquisitionType.CONTINUOUS,
-            AcquisitionMode.ON_DEMAND: AcquisitionType.HW_TIMED_SINGLE_POINT,
         }
         edge_map = {Edge.RISING: NIEdge.RISING, Edge.FALLING: NIEdge.FALLING}
         # ``samps_per_chan`` is required by NI for both finite and continuous

@@ -285,7 +285,7 @@ Those concepts are either owned by NI-DAQmx or unnecessary at this level. Resist
 ```python
 import anyio
 
-from nidaqlib import AnalogInputVoltage, TaskSpec, Timing, open_task
+from nidaqlib import AnalogInputVoltage, TaskSpec, open_task
 
 
 spec = TaskSpec(
@@ -304,7 +304,6 @@ spec = TaskSpec(
             max_val=0.1,
         ),
     ],
-    timing=Timing(rate_hz=10.0),
 )
 
 

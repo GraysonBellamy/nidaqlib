@@ -35,6 +35,7 @@ class Daq:
         *,
         backend: DaqBackend | None = None,
         timeout: float = 10.0,
+        confirm_start: bool = False,
     ) -> Iterator[SyncDaqSession]:
         """Open a :class:`SyncDaqSession` and tear it down on exit.
 
@@ -56,6 +57,11 @@ class Daq:
                 block = session.read_block(samples_per_channel=1000)
         """
         with SyncPortal() as portal:
-            acm = open_task(spec, backend=backend, timeout=timeout)
+            acm = open_task(
+                spec,
+                backend=backend,
+                timeout=timeout,
+                confirm_start=confirm_start,
+            )
             with portal.wrap_async_context_manager(acm) as async_session:
                 yield SyncDaqSession(portal, async_session)

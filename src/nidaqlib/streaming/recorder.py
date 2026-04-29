@@ -50,7 +50,7 @@ from nidaqlib.tasks.models import DaqReading
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 
-    from anyio.streams.memory import MemoryObjectSendStream
+    from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
     from nidaqlib.manager import DaqManager, TaskResult
     from nidaqlib.tasks.session import DaqSession
@@ -130,20 +130,31 @@ async def record_polled(
     summary = AcquisitionSummary()
     period = 1.0 / rate_hz
     tx, rx = anyio.create_memory_object_stream[_PolledItem](max_buffer_size=buffer_size)
+    drop_rx = rx.clone()
 
-    async with anyio.create_task_group() as tg, rx:
+    async with anyio.create_task_group() as tg, rx, drop_rx:
         if isinstance(source, DaqManager):
             tg.start_soon(
                 _polled_manager_producer,
                 source,
                 tx,
+                drop_rx,
                 summary,
                 period,
                 error_policy,
                 overflow,
             )
         else:
-            tg.start_soon(_polled_producer, source, tx, summary, period, error_policy, overflow)
+            tg.start_soon(
+                _polled_producer,
+                source,
+                tx,
+                drop_rx,
+                summary,
+                period,
+                error_policy,
+                overflow,
+            )
         try:
             yield rx, summary
         finally:
@@ -155,6 +166,7 @@ async def record_polled(
 async def _polled_producer(
     source: DaqSession,
     tx: MemoryObjectSendStream[_PolledItem],
+    drop_rx: MemoryObjectReceiveStream[_PolledItem],
     summary: AcquisitionSummary,
     period: float,
     error_policy: ErrorPolicy,
@@ -188,7 +200,7 @@ async def _polled_producer(
                 if error_policy is ErrorPolicy.RAISE:
                     raise
                 reading = _build_error_reading(source, exc)
-            await _send_payload(tx, reading, summary, overflow)
+            await _send_payload(tx, drop_rx, reading, summary, overflow)
             tick += 1
     except (anyio.BrokenResourceError, anyio.ClosedResourceError):
         # Consumer closed mid-flight — asyncio surfaces this as
@@ -201,6 +213,7 @@ async def _polled_producer(
 async def _polled_manager_producer(
     manager: DaqManager,
     tx: MemoryObjectSendStream[_PolledItem],
+    drop_rx: MemoryObjectReceiveStream[_PolledItem],
     summary: AcquisitionSummary,
     period: float,
     error_policy: ErrorPolicy,
@@ -230,7 +243,7 @@ async def _polled_manager_producer(
             results = await manager.poll(error_policy=error_policy)
             errors_this_tick = sum(1 for r in results.values() if r.error is not None)
             summary.errors_observed += errors_this_tick
-            await _send_payload(tx, results, summary, overflow)
+            await _send_payload(tx, drop_rx, results, summary, overflow)
             tick += 1
     except (anyio.BrokenResourceError, anyio.ClosedResourceError):
         return
@@ -260,6 +273,7 @@ def _build_error_reading(source: DaqSession, exc: NIDaqError) -> DaqReading:
 
 async def _send_payload(
     tx: MemoryObjectSendStream[_PolledItem],
+    drop_rx: MemoryObjectReceiveStream[_PolledItem],
     payload: _PolledItem,
     summary: AcquisitionSummary,
     overflow: OverflowPolicy,
@@ -278,7 +292,17 @@ async def _send_payload(
     if overflow is OverflowPolicy.DROP_NEWEST:
         summary.blocks_dropped += 1
         return
-    # DROP_OLDEST — same fallback strategy as the block recorder.
-    summary.blocks_dropped += 1
-    await tx.send(payload)
-    summary.blocks_emitted += 1
+    # DROP_OLDEST — evict from a receive clone, then enqueue without
+    # waiting on the consumer.
+    while True:
+        try:
+            drop_rx.receive_nowait()
+            summary.blocks_dropped += 1
+        except anyio.WouldBlock:
+            pass
+        try:
+            tx.send_nowait(payload)
+            summary.blocks_emitted += 1
+            return
+        except anyio.WouldBlock:
+            continue

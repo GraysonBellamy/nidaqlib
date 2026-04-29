@@ -119,3 +119,18 @@ async def test_counter_input_addable_via_fake_backend() -> None:
     async with open_task(spec, backend=backend):
         ops = [op.op for op in backend.operations]
     assert ops.count("add_channel") == 1
+
+
+@pytest.mark.anyio
+async def test_counter_output_start_requires_confirm() -> None:
+    spec = TaskSpec(
+        name="co-task",
+        channels=[CounterPulseFrequency(physical_channel="Dev1/ctr0", frequency=1000.0)],
+    )
+    backend = FakeDaqBackend()
+    with pytest.raises(NIDaqValidationError, match="confirm=True"):
+        async with open_task(spec, backend=backend):
+            pass
+
+    async with open_task(spec, backend=backend, confirm_start=True):
+        pass

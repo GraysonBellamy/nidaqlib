@@ -11,13 +11,12 @@ subclass identity. See design doc §8.2 and §18.3.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Self
+from types import MappingProxyType
+from typing import Any, ClassVar, Self, cast
 
 from nidaqlib.errors import NIDaqValidationError
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 
 def _empty_metadata() -> dict[str, str | int | float | bool]:
@@ -44,6 +43,14 @@ class ChannelSpec:
     kind: ClassVar[str] = ""
     """Discriminator used by :meth:`from_dict`. Concrete subclasses override."""
 
+    def __post_init__(self) -> None:
+        """Validate and freeze common channel metadata."""
+        if not self.physical_channel:
+            raise NIDaqValidationError("physical_channel must be a non-empty string")
+        if self.name is not None and not self.name:
+            raise NIDaqValidationError("name must be non-empty when provided")
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
     @property
     def display_name(self) -> str:
         """Return ``name`` if set, otherwise the physical channel."""
@@ -56,9 +63,13 @@ class ChannelSpec:
             A dict carrying ``kind`` plus every dataclass field. Mappings are
             copied to plain ``dict`` so the result is JSON-encodable.
         """
-        payload = dataclasses.asdict(self)
+        payload: dict[str, Any] = {}
+        for spec in dataclasses.fields(self):
+            value = getattr(self, spec.name)
+            if isinstance(value, Mapping):
+                value = dict(cast("Mapping[str, Any]", value))
+            payload[spec.name] = value
         payload["kind"] = self.kind
-        # Mapping fields are reified to plain dicts by ``asdict`` already.
         return payload
 
     @classmethod

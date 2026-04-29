@@ -22,6 +22,7 @@ async def open_task(
     *,
     backend: DaqBackend | None = None,
     timeout: float = 10.0,  # noqa: ASYNC109 — NI per-call timeout, not coroutine
+    confirm_start: bool = False,
 ) -> AsyncGenerator[DaqSession]:
     """Open a :class:`DaqSession` for ``spec`` and start it.
 
@@ -37,6 +38,8 @@ async def open_task(
             tests typically pass a
             :class:`~nidaqlib.backend.fake.FakeDaqBackend` here.
         timeout: Default per-operation timeout, in seconds.
+        confirm_start: Required when starting the task can actuate hardware
+            immediately (for example counter-output pulse trains).
 
     Yields:
         A started :class:`DaqSession`.
@@ -49,7 +52,7 @@ async def open_task(
         backend = NidaqmxBackend()
     session = DaqSession(spec, backend, timeout=timeout)
     try:
-        await session.start()
+        await session.start(confirm=confirm_start)
         yield session
     finally:
         await session.close()

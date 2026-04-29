@@ -10,7 +10,9 @@ import pytest
 from nidaqlib import (
     AcquisitionMode,
     AnalogInputVoltage,
+    DigitalInput,
     NIDaqTaskStateError,
+    NIDaqValidationError,
     TaskSpec,
     Timing,
     open_task,
@@ -54,6 +56,7 @@ async def test_poll_works_for_on_demand_task() -> None:
         reading = await session.poll()
     assert reading.device == "ai_test"
     assert "ch0" in reading.values
+    assert "configure_timing" not in [op.op for op in backend.operations]
 
 
 @pytest.mark.anyio
@@ -89,3 +92,15 @@ async def test_block_index_and_first_sample_advance() -> None:
     assert b0.first_sample_index == 0
     assert b1.block_index == 1
     assert b1.first_sample_index == 100
+
+
+@pytest.mark.anyio
+async def test_read_rejects_non_analog_input_task() -> None:
+    spec = TaskSpec(
+        name="di_test",
+        channels=[DigitalInput(physical_channel="Dev1/port0/line0", name="line0")],
+    )
+    backend = FakeDaqBackend(read_block_default_shape=(1, 1))
+    async with open_task(spec, backend=backend) as session:
+        with pytest.raises(NIDaqValidationError, match="analog-input"):
+            await session.poll()

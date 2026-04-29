@@ -70,6 +70,11 @@ def _column_type(spec: ColumnSpec) -> str:
     return "TEXT"
 
 
+def _quote_identifier(name: str) -> str:
+    """Return ``name`` as a safely quoted SQLite identifier."""
+    return '"' + name.replace('"', '""') + '"'
+
+
 def _block_summary_row(block: DaqBlock) -> dict[str, float | int | str | bool | None]:
     """Flatten a :class:`DaqBlock` into one summary row.
 
@@ -261,17 +266,19 @@ class SqliteSink:
     def _build_insert_sql(self, table: str, lock: SchemaLock) -> str:
         columns = lock.columns
         assert columns is not None  # noqa: S101
-        col_list = ", ".join(f'"{spec.name}"' for spec in columns)
+        col_list = ", ".join(_quote_identifier(spec.name) for spec in columns)
         placeholders = ", ".join("?" for _ in columns)
         # S608: identifiers validated in __init__; values parameterised.
-        return f'INSERT INTO "{table}" ({col_list}) VALUES ({placeholders})'  # noqa: S608
+        return f"INSERT INTO {_quote_identifier(table)} ({col_list}) VALUES ({placeholders})"  # noqa: S608
 
     def _create_table_blocking(self, table: str, lock: SchemaLock) -> None:
         assert self._conn is not None  # noqa: S101
         columns = lock.columns
         assert columns is not None  # noqa: S101
-        col_defs = ", ".join(f'"{spec.name}" {_column_type(spec)}' for spec in columns)
-        stmt = f'CREATE TABLE IF NOT EXISTS "{table}" ({col_defs})'
+        col_defs = ", ".join(
+            f"{_quote_identifier(spec.name)} {_column_type(spec)}" for spec in columns
+        )
+        stmt = f"CREATE TABLE IF NOT EXISTS {_quote_identifier(table)} ({col_defs})"
         try:
             self._conn.execute(stmt)
         except sqlite3.Error as exc:

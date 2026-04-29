@@ -38,7 +38,7 @@ from nidaqlib.streaming.block import ErrorPolicy
 from nidaqlib.tasks.session import DaqSession
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
     from types import TracebackType
 
     from nidaqlib.backend.base import DaqBackend
@@ -117,6 +117,7 @@ class DaqManager:
         self._order: list[str] = []
         self._task_locks: dict[str, anyio.Lock] = {}
         self._device_locks: dict[str, anyio.Lock] = {}
+        self._task_devices: dict[str, tuple[str, ...]] = {}
         self._global_lock = anyio.Lock()
         self._closed = False
 
@@ -197,6 +198,8 @@ class DaqManager:
             self._refcounts[name] = 1
             self._order.append(name)
             self._task_locks[name] = anyio.Lock()
+            devices = tuple(sorted({_device_of(ch.physical_channel) for ch in spec.channels}))
+            self._task_devices[name] = devices
             for ch in spec.channels:
                 dev = _device_of(ch.physical_channel)
                 self._device_locks.setdefault(dev, anyio.Lock())
@@ -248,6 +251,7 @@ class DaqManager:
             self._specs.pop(name, None)
             self._refcounts.pop(name, None)
             self._task_locks.pop(name, None)
+            self._task_devices.pop(name, None)
             with contextlib.suppress(ValueError):
                 self._order.remove(name)
         # Close outside the global lock so a slow NI close doesn't block
@@ -269,12 +273,17 @@ class DaqManager:
         names: Sequence[str] | None = None,
         *,
         error_policy: ErrorPolicy | None = None,
+        confirm: bool = False,
     ) -> Mapping[str, TaskResult[None]]:
         """Start one or more managed tasks. Defaults to all in add-order."""
+
+        async def _do(session: DaqSession) -> None:
+            await session.start(confirm=confirm)
+
         return await self._for_each(
             names,
             "start",
-            self._call_start,
+            _do,
             error_policy=error_policy,
         )
 
@@ -284,6 +293,7 @@ class DaqManager:
         slaves: Sequence[str],
         *,
         error_policy: ErrorPolicy | None = None,
+        confirm: bool = False,
     ) -> Mapping[str, TaskResult[None]]:
         """Arm ``slaves`` first, then start ``master``.
 
@@ -308,9 +318,11 @@ class DaqManager:
         Args:
             master: Manager-add name of the master task.
             slaves: Manager-add names of the slave tasks. Order is
-                respected — slaves are armed left-to-right.
+            respected — slaves are armed left-to-right.
             error_policy: Optional override; defaults to the manager's
                 policy.
+            confirm: Required when any task being started can actuate
+                hardware immediately.
 
         Returns:
             One :class:`TaskResult[None]` per task (``master`` plus every
@@ -337,10 +349,9 @@ class DaqManager:
 
         for name in slaves:
             session = self._sessions[name]
-            lock = self._task_locks[name]
             try:
-                async with lock:
-                    await session.start()
+                async with self._operation_locks(name):
+                    await session.start(confirm=confirm)
                 results[name] = TaskResult(name=name, value=None, error=None)
                 armed.append(name)
             except NIDaqError as exc:
@@ -351,9 +362,8 @@ class DaqManager:
                 # but never raise from the rollback path.
                 for prior in reversed(armed):
                     prior_session = self._sessions[prior]
-                    prior_lock = self._task_locks[prior]
                     try:
-                        async with prior_lock:
+                        async with self._operation_locks(prior):
                             await prior_session.stop()
                     except NIDaqError as rollback_exc:
                         errors.append(rollback_exc)
@@ -375,10 +385,9 @@ class DaqManager:
 
         # All slaves armed — start the master.
         master_session = self._sessions[master]
-        master_lock = self._task_locks[master]
         try:
-            async with master_lock:
-                await master_session.start()
+            async with self._operation_locks(master):
+                await master_session.start(confirm=confirm)
             results[master] = TaskResult(name=master, value=None, error=None)
         except NIDaqError as exc:
             results[master] = TaskResult(name=master, value=None, error=exc)
@@ -463,6 +472,15 @@ class DaqManager:
             raise KeyError(f"unknown task name(s): {unknown!r}")
         return list(names)
 
+    @contextlib.asynccontextmanager
+    async def _operation_locks(self, name: str) -> AsyncGenerator[None]:
+        """Serialise one task operation with its task lock and device locks."""
+        async with contextlib.AsyncExitStack() as stack:
+            await stack.enter_async_context(self._task_locks[name])
+            for dev in self._task_devices.get(name, ()):
+                await stack.enter_async_context(self._device_locks[dev])
+            yield
+
     async def _for_each[U](
         self,
         names: Sequence[str] | None,
@@ -488,9 +506,8 @@ class DaqManager:
 
         async def _run_one(name: str) -> None:
             session = self._sessions[name]
-            lock = self._task_locks[name]
             try:
-                async with lock:
+                async with self._operation_locks(name):
                     value = await fn(session)
                 results[name] = TaskResult(name=name, value=value, error=None)
             except NIDaqError as exc:
@@ -528,6 +545,8 @@ class DaqManager:
             self._refcounts.clear()
             self._order.clear()
             self._task_locks.clear()
+            self._task_devices.clear()
+            self._device_locks.clear()
         errors: list[BaseException] = []
         for name in order:
             session = sessions.get(name)

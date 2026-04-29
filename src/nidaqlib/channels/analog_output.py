@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 from nidaqlib.channels.base import ChannelSpec, register_channel_kind
+from nidaqlib.errors import NIDaqValidationError
 
 if TYPE_CHECKING:
     from nidaqmx.constants import TerminalConfiguration
@@ -55,6 +56,26 @@ class AnalogOutputVoltage(ChannelSpec):  # type: ignore[no-any-unimported]
     requires_confirm: bool = True
     terminal_config: TerminalConfiguration | None = None  # type: ignore[no-any-unimported]
     custom_scale_name: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the output and safety ranges."""
+        ChannelSpec.__post_init__(self)
+        if self.min_val >= self.max_val:
+            raise NIDaqValidationError(
+                f"min_val must be < max_val for {self.display_name!r}; "
+                f"got {self.min_val!r} >= {self.max_val!r}"
+            )
+        lo = self.effective_safe_min
+        hi = self.effective_safe_max
+        if lo > hi:
+            raise NIDaqValidationError(
+                f"safe_min must be <= safe_max for {self.display_name!r}; got {lo!r} > {hi!r}"
+            )
+        if lo < self.min_val or hi > self.max_val:
+            raise NIDaqValidationError(
+                f"safe range [{lo}, {hi}] must stay inside device range "
+                f"[{self.min_val}, {self.max_val}] for {self.display_name!r}"
+            )
 
     @property
     def effective_safe_min(self) -> float:

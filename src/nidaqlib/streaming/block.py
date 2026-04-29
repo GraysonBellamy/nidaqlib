@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
     import numpy as np
     from anyio.abc import TaskGroup
-    from anyio.streams.memory import MemoryObjectSendStream
+    from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
     from nidaqlib.tasks.session import DaqSession
 
@@ -152,22 +152,35 @@ async def record(
 
     Raises:
         NIDaqTaskStateError: ``source`` is not started.
+        ValueError: ``chunk_size < 1`` or ``buffer_size < 1``.
     """
+    if chunk_size < 1:
+        raise ValueError(f"chunk_size must be >= 1, got {chunk_size!r}")
+    if buffer_size < 1:
+        raise ValueError(f"buffer_size must be >= 1, got {buffer_size!r}")
     if not source.is_started:
         raise NIDaqTaskStateError(
             f"record() requires a started session; task {source.spec.name!r} is not running",
             context=ErrorContext(task_name=source.spec.name, operation="record"),
         )
+    timing = source.spec.timing
+    if timing is None or getattr(timing, "mode", None) == "on_demand":
+        raise NIDaqTaskStateError(
+            "record() requires a hardware-clocked task; use record_polled() for "
+            "timing=None or AcquisitionMode.ON_DEMAND",
+            context=ErrorContext(task_name=source.spec.name, operation="record"),
+        )
 
     summary = AcquisitionSummary()
     tx, rx = anyio.create_memory_object_stream[DaqBlock](max_buffer_size=buffer_size)
+    drop_rx = rx.clone()
 
     # Design §13.2 / §14.6 — TDMS LoggingMode.LOG bypasses the application
     # read path. If we tried to drive the producer, ``read_block`` would
     # block forever waiting on samples that never arrive. Detect at entry
     # and emit an empty stream so consumers see ``blocks_emitted == 0``.
     if _is_log_only(source):
-        async with rx:
+        async with rx, drop_rx:
             await tx.aclose()
             try:
                 yield rx, summary
@@ -175,14 +188,15 @@ async def record(
                 summary.finished_at = datetime.now(UTC)
         return
 
-    async with anyio.create_task_group() as tg, rx:
+    async with anyio.create_task_group() as tg, rx, drop_rx:
         if use_callback_bridge:
-            await _start_bridge_producer(tg, source, tx, summary, chunk_size)
+            await _start_bridge_producer(tg, source, tx, drop_rx, summary, chunk_size, overflow)
         else:
             tg.start_soon(
                 _blocking_producer,
                 source,
                 tx,
+                drop_rx,
                 summary,
                 chunk_size,
                 timeout,
@@ -217,6 +231,7 @@ def _is_log_only(source: DaqSession) -> bool:
 async def _blocking_producer(
     source: DaqSession,
     tx: MemoryObjectSendStream[DaqBlock],
+    drop_rx: MemoryObjectReceiveStream[DaqBlock],
     summary: AcquisitionSummary,
     chunk_size: int,
     timeout: float,  # noqa: ASYNC109 — per-NI-read timeout, not coroutine
@@ -242,9 +257,9 @@ async def _blocking_producer(
                 # RETURN — emit an error-tagged block. Counters still advance
                 # so the consumer can detect dropped intervals (design §13.2).
                 error_block = _build_error_block(source, chunk_size, exc)
-                await _send_with_overflow(tx, error_block, summary, overflow)
+                await _send_with_overflow(tx, drop_rx, error_block, summary, overflow)
                 continue
-            await _send_with_overflow(tx, block, summary, overflow)
+            await _send_with_overflow(tx, drop_rx, block, summary, overflow)
     except (anyio.BrokenResourceError, anyio.ClosedResourceError):
         # Consumer side closed mid-flight — clean shutdown, not an error.
         # asyncio surfaces this as BrokenResourceError; trio uses
@@ -287,6 +302,7 @@ def _build_error_block(
 
 async def _send_with_overflow(
     tx: MemoryObjectSendStream[DaqBlock],
+    drop_rx: MemoryObjectReceiveStream[DaqBlock],
     block: DaqBlock,
     summary: AcquisitionSummary,
     overflow: OverflowPolicy,
@@ -308,18 +324,24 @@ async def _send_with_overflow(
     if overflow is OverflowPolicy.DROP_NEWEST:
         summary.blocks_dropped += 1
         return
-    # DROP_OLDEST: best-effort eviction of the oldest queued block.
-    # AnyIO doesn't expose a peek-and-pop API on the send side, so we use
-    # the receive side via the stream's internal state. The recorder's
-    # consumer holds the only outstanding receive handle, so blocking-send
-    # would deadlock against itself; the safest cross-implementation way
-    # is to simply re-await `send`, which yields and lets the consumer
-    # advance. If the consumer is permanently slow, the stream stays full
-    # and subsequent blocks land in the same path — the count is still
-    # bumped correctly.
-    summary.blocks_dropped += 1
-    await tx.send(block)
-    summary.blocks_emitted += 1
+    # DROP_OLDEST: evict one queued block through a receive clone, then try
+    # to enqueue the newest block without waiting on the consumer.
+    while True:
+        try:
+            drop_rx.receive_nowait()
+            summary.blocks_dropped += 1
+        except anyio.WouldBlock:
+            # Consumer won the race and made space after our failed send.
+            pass
+        try:
+            tx.send_nowait(block)
+            summary.blocks_emitted += 1
+            return
+        except anyio.WouldBlock:
+            # Still full; loop and evict another queued item.
+            continue
+        except anyio.ClosedResourceError:
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -331,8 +353,10 @@ async def _start_bridge_producer(
     tg: TaskGroup,
     source: DaqSession,
     tx: MemoryObjectSendStream[DaqBlock],
+    drop_rx: MemoryObjectReceiveStream[DaqBlock],
     summary: AcquisitionSummary,
     chunk_size: int,
+    overflow: OverflowPolicy,
 ) -> None:
     """Wire up the §11.3.2 driver-thread → ``queue.SimpleQueue`` bridge.
 
@@ -384,7 +408,7 @@ async def _start_bridge_producer(
                     return
                 block = _build_block_from_array(source, arr, chunk_size)
                 try:
-                    tx.send_nowait(block)
+                    await _send_with_overflow(tx, drop_rx, block, summary, overflow)
                 except anyio.WouldBlock:
                     summary.blocks_dropped += 1
                     continue

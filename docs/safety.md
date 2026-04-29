@@ -14,7 +14,7 @@ different gate and a different test marker:
 |---|---|---|---|
 | **Read-only** | `read_block`, `poll`, `record`, `record_polled` against AI / DI channels. | Default. | `hardware` |
 | **Stateful** | Task-state changes (start/stop, configure new task) without writing. | Default — once you have hardware. | `hardware_stateful` |
-| **Output** | AO / DO writes — anything that leaves the device pin energised. | Per-call `confirm=True` plus `safe_min` / `safe_max` clamp. | `hardware_output` |
+| **Output** | AO / DO writes and counter-output starts — anything that leaves the device pin energised. | Per-call `confirm=True` plus `safe_min` / `safe_max` clamp where applicable. | `hardware_output` |
 | **Destructive** | Calibration, factory ops, anything that can permanently alter the device. | Not implemented in v0.2; reserved. | `hardware_destructive` |
 
 ## How the gate works
@@ -37,12 +37,18 @@ order, **before** any I/O:
 
 Only after all three checks pass does the call dispatch to the backend.
 
+Counter-output pulse trains (`CounterPulseFrequency`, `CounterPulseTime`,
+`CounterPulseTicks`) actuate on task start, not through `write()`. For
+those tasks, pass `confirm_start=True` to `open_task(...)` or call
+`session.start(confirm=True)` when restarting an already-open session.
+
 ## Defaults are conservative
 
 | Channel | `requires_confirm` default |
 |---|:-:|
 | `AnalogOutputVoltage` | `True` |
 | `DigitalOutput` | `True` |
+| `CounterPulseFrequency` / `CounterPulseTime` / `CounterPulseTicks` | `True` |
 
 Override per channel only when you have a reason — for example, a
 non-actuating digital indicator line:

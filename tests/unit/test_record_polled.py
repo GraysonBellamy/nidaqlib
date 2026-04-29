@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import cast
 
+import anyio
 import numpy as np
 import pytest
 
@@ -21,6 +22,7 @@ from nidaqlib import (
     DaqReading,
     ErrorPolicy,
     NIDaqReadError,
+    OverflowPolicy,
     TaskSpec,
     Timing,
     open_task,
@@ -83,6 +85,28 @@ async def test_error_policy_return_emits_error_reading() -> None:
     assert seen[0].values == {}
     assert seen[1].error is None
     assert summary.errors_observed >= 1
+
+
+@pytest.mark.anyio
+async def test_drop_oldest_does_not_block_producer() -> None:
+    """A full outbound buffer should evict old readings instead of stalling."""
+    backend = FakeDaqBackend(read_block_default_shape=(1, 1))
+    async with (
+        open_task(_make_spec(), backend=backend) as session,
+        record_polled(
+            session,
+            rate_hz=500.0,
+            buffer_size=1,
+            overflow=OverflowPolicy.DROP_OLDEST,
+        ) as (rx, summary),
+    ):
+        await anyio.sleep(0.05)
+        payload = await rx.__anext__()
+
+    assert cast("DaqReading", payload).error is None
+    assert summary.blocks_dropped > 0
+    read_count = sum(1 for op in backend.operations if op.op == "read_block")
+    assert read_count > 5
 
 
 def test_invalid_rate_hz() -> None:

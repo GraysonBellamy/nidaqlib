@@ -21,6 +21,8 @@ import pytest
 from nidaqlib import (
     AcquisitionMode,
     AnalogInputVoltage,
+    AnalogOutputVoltage,
+    CounterPulseFrequency,
     DaqBlock,
     DaqReading,
     Edge,
@@ -127,6 +129,25 @@ def test_timing_unknown_mode_rejected() -> None:
         Timing.from_dict({"rate_hz": 100.0, "mode": "not_a_mode"})
 
 
+def test_timing_rejects_nonpositive_rate() -> None:
+    with pytest.raises(NIDaqValidationError):
+        Timing(rate_hz=0.0)
+
+
+def test_output_safe_range_must_be_ordered() -> None:
+    with pytest.raises(NIDaqValidationError):
+        AnalogOutputVoltage(physical_channel="Dev1/ao0", safe_min=5.0, safe_max=0.0)
+
+
+def test_counter_output_rejects_bad_duty_cycle() -> None:
+    with pytest.raises(NIDaqValidationError):
+        CounterPulseFrequency(
+            physical_channel="Dev1/ctr0",
+            frequency=1000.0,
+            duty_cycle=1.5,
+        )
+
+
 # -- task-spec round-trip -----------------------------------------------------
 
 
@@ -145,6 +166,13 @@ def test_task_spec_round_trip() -> None:
 def test_task_spec_rejects_empty_channels() -> None:
     with pytest.raises(NIDaqValidationError):
         TaskSpec(name="empty", channels=[])
+
+
+def test_task_spec_copies_channels() -> None:
+    channels = [AnalogInputVoltage(physical_channel="Dev1/ai0")]
+    spec = TaskSpec(name="immutable", channels=channels)
+    channels.append(AnalogInputVoltage(physical_channel="Dev1/ai1"))
+    assert len(spec.channels) == 1
 
 
 def test_task_spec_rejects_unknown_trigger_kind() -> None:

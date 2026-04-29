@@ -62,6 +62,15 @@ class AnalogInputVoltage(ChannelSpec):  # type: ignore[no-any-unimported]
     terminal_config: TerminalConfiguration | None = None  # type: ignore[no-any-unimported]
     custom_scale_name: str | None = None
 
+    def __post_init__(self) -> None:
+        """Validate the voltage range."""
+        ChannelSpec.__post_init__(self)
+        if self.min_val >= self.max_val:
+            raise NIDaqValidationError(
+                f"min_val must be < max_val for {self.display_name!r}; "
+                f"got {self.min_val!r} >= {self.max_val!r}"
+            )
+
 
 @register_channel_kind
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -95,6 +104,15 @@ class ThermocoupleInput(ChannelSpec):  # type: ignore[no-any-unimported]
     units: TemperatureUnits = field(  # type: ignore[no-any-unimported]
         default_factory=_default_temperature_units
     )
+
+    def __post_init__(self) -> None:
+        """Validate the temperature range."""
+        ChannelSpec.__post_init__(self)
+        if self.min_val >= self.max_val:
+            raise NIDaqValidationError(
+                f"min_val must be < max_val for {self.display_name!r}; "
+                f"got {self.min_val!r} >= {self.max_val!r}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise via the enums' ``.value`` so the payload is JSON-encodable.

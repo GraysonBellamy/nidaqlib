@@ -5,7 +5,7 @@ have different correctness models — don't try to unify them.
 
 | Recorder         | Path                | Emits           | Default overflow | Use when |
 |------------------|---------------------|-----------------|------------------|----------|
-| `record`         | hardware-clocked    | `DaqBlock`      | `DROP_OLDEST`    | The NI sample clock owns timing. Ratesa from a few hundred Hz upward. |
+| `record`         | hardware-clocked    | `DaqBlock`      | `DROP_OLDEST`    | The NI sample clock owns timing. Rates from a few hundred Hz upward. |
 | `record_polled`  | software-timed      | `DaqReading`    | `BLOCK`          | Cross-instrument scalar correlation. Rates ≤ 10 Hz. |
 
 ## `record(session, *, chunk_size, ...)`
@@ -66,8 +66,9 @@ The polled path:
 - Defaults to `OverflowPolicy.BLOCK` because the software-timed path
   can pause without leaking into NI buffer overrun.
 
-`record_polled` requires `Timing.mode == ON_DEMAND` (or `Timing is None`)
-on the session. Hardware-clocked sessions must use `record` —
+`record_polled` requires `timing=None` or `Timing.mode == ON_DEMAND`
+on the session. `ON_DEMAND` is a software-polled marker; it does not
+configure an NI sample clock. Hardware-clocked sessions must use `record` —
 `session.poll()` (which `record_polled` calls per tick) explicitly
 rejects buffered tasks (design doc §9.2).
 

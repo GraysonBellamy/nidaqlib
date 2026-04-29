@@ -125,14 +125,20 @@ class DaqSession:
 
     # -- Lifecycle -----------------------------------------------------------
 
-    async def start(self) -> None:
+    async def start(self, *, confirm: bool = False) -> None:
         """Create the underlying task, configure it, and start sampling.
 
-        On failure, the partial task is torn down so the session does not
-        leak NI resources.
+        The first successful call creates/configures the underlying NI task.
+        Later calls after :meth:`stop` reuse that configured task and reset
+        the block/sample counters for a new run.
+
+        ``confirm=True`` is required for task kinds whose ``start`` call can
+        actuate hardware immediately (currently counter-output pulse trains).
 
         Raises:
             NIDaqTaskStateError: Already started or already closed.
+            NIDaqValidationError: Starting would actuate hardware without
+                explicit confirmation.
         """
         if self._closed:
             raise NIDaqTaskStateError(
@@ -145,7 +151,20 @@ class DaqSession:
                 context=ErrorContext(task_name=self._spec.name, operation="start"),
             )
         async with self._lock:
-            await run_sync(self._configure_sync)
+            if self._closed:
+                raise NIDaqTaskStateError(
+                    f"session for task {self._spec.name!r} is closed",
+                    context=ErrorContext(task_name=self._spec.name, operation="start"),
+                )
+            if self._started:
+                raise NIDaqTaskStateError(
+                    f"session for task {self._spec.name!r} is already started",
+                    context=ErrorContext(task_name=self._spec.name, operation="start"),
+                )
+            self._validate_start_safety(confirm=confirm)
+            configured_now = self._task is None
+            if configured_now:
+                await run_sync(self._configure_sync)
             # Capture the wall-clock anchor as close to the start as possible
             # — `start_task` returns once NI has armed the clock, so the
             # first sample's wall-clock is approximately this timestamp + a
@@ -154,10 +173,13 @@ class DaqSession:
             try:
                 await run_sync(self._backend.start_task, self._task)
             except BaseException:
-                await run_sync(self._backend.close_task, self._task)
-                self._task = None
+                if configured_now:
+                    await run_sync(self._backend.close_task, self._task)
+                    self._task = None
                 raise
             self._task_started_at = anchor
+            self._first_sample_index = 0
+            self._block_index = 0
             self._started = True
 
     def _configure_sync(self) -> None:
@@ -173,7 +195,10 @@ class DaqSession:
             # not yet configured.
             if self._spec.logging is not None:
                 self._backend.configure_logging(task, self._spec.logging)
-            if self._spec.timing is not None:
+            if (
+                self._spec.timing is not None
+                and self._spec.timing.mode is not AcquisitionMode.ON_DEMAND
+            ):
                 self._backend.configure_timing(task, self._spec.timing)
             if self._spec.trigger is not None:
                 self._backend.configure_trigger(task, self._spec.trigger)
@@ -204,6 +229,12 @@ class DaqSession:
         """
         if self._closed:
             return
+        if self._callback_handle is not None:
+            raise NIDaqTaskStateError(
+                "cannot close a session while an every-N-samples callback bridge is active; "
+                "exit the record(..., use_callback_bridge=True) context first",
+                context=ErrorContext(task_name=self._spec.name, operation="close"),
+            )
         self._closed = True
         if self._task is None:
             return
@@ -238,6 +269,7 @@ class DaqSession:
             NIDaqReadError / NIDaqTimeoutError: Surfaced from the backend.
         """
         self._require_started("read_block")
+        self._require_analog_input_task("read_block")
         eff_timeout = timeout if timeout is not None else self._timeout
         async with self._lock:
             read_started_at = datetime.now(UTC)
@@ -310,6 +342,7 @@ class DaqSession:
                 (continuous or finite mode and started).
         """
         self._require_started("poll")
+        self._require_analog_input_task("poll")
         timing = self._spec.timing
         if timing is not None and timing.mode in (
             AcquisitionMode.CONTINUOUS,
@@ -392,6 +425,11 @@ class DaqSession:
         # Late import — keeps the channel modules out of the session-import
         # graph for sessions that never write.
         from nidaqlib.channels.analog_output import AnalogOutputVoltage  # noqa: PLC0415
+        from nidaqlib.channels.counter_output import (  # noqa: PLC0415
+            CounterPulseFrequency,
+            CounterPulseTicks,
+            CounterPulseTime,
+        )
         from nidaqlib.channels.digital_output import DigitalOutput  # noqa: PLC0415
 
         self._require_started("write")
@@ -400,8 +438,25 @@ class DaqSession:
             ch for ch in self._spec.channels if isinstance(ch, (AnalogOutputVoltage, DigitalOutput))
         ]
         if not output_channels:
+            if any(
+                isinstance(ch, (CounterPulseFrequency, CounterPulseTime, CounterPulseTicks))
+                for ch in self._spec.channels
+            ):
+                raise NIDaqValidationError(
+                    "counter-output pulse trains are controlled by start()/stop(), not write(); "
+                    "start them with confirm=True",
+                    context=ErrorContext(task_name=self._spec.name, operation="write"),
+                )
             raise NIDaqValidationError(
                 f"task {self._spec.name!r} has no output channels to write",
+                context=ErrorContext(task_name=self._spec.name, operation="write"),
+            )
+        has_ao = any(isinstance(ch, AnalogOutputVoltage) for ch in output_channels)
+        has_do = any(isinstance(ch, DigitalOutput) for ch in output_channels)
+        if has_ao and has_do:
+            raise NIDaqValidationError(
+                "write() does not support mixing analog-output and digital-output "
+                "channels in one task",
                 context=ErrorContext(task_name=self._spec.name, operation="write"),
             )
 
@@ -481,6 +536,46 @@ class DaqSession:
                 context=ErrorContext(task_name=self._spec.name, operation=op),
             )
 
+    def _validate_start_safety(self, *, confirm: bool) -> None:
+        """Require confirmation before starting task kinds that actuate immediately."""
+        from nidaqlib.channels.counter_output import (  # noqa: PLC0415
+            CounterPulseFrequency,
+            CounterPulseTicks,
+            CounterPulseTime,
+        )
+
+        actuating = [
+            ch.display_name
+            for ch in self._spec.channels
+            if isinstance(ch, (CounterPulseFrequency, CounterPulseTime, CounterPulseTicks))
+            and getattr(ch, "requires_confirm", False)
+        ]
+        if actuating and not confirm:
+            raise NIDaqValidationError(
+                f"starting task {self._spec.name!r} requires confirm=True; "
+                f"counter-output channels would actuate immediately: {actuating!r}",
+                context=ErrorContext(task_name=self._spec.name, operation="start"),
+            )
+
+    def _require_analog_input_task(self, op: str) -> None:
+        """Reject task shapes the current read path cannot represent correctly."""
+        from nidaqlib.channels.analog_input import (  # noqa: PLC0415
+            AnalogInputVoltage,
+            ThermocoupleInput,
+        )
+
+        unsupported = [
+            ch.display_name
+            for ch in self._spec.channels
+            if not isinstance(ch, (AnalogInputVoltage, ThermocoupleInput))
+        ]
+        if unsupported:
+            raise NIDaqValidationError(
+                f"{op} currently supports analog-input tasks only; unsupported channels: "
+                f"{unsupported!r}",
+                context=ErrorContext(task_name=self._spec.name, operation=op),
+            )
+
     def _channel_names(self) -> tuple[str, ...]:
         return tuple(ch.display_name for ch in self._spec.channels)
 
@@ -502,7 +597,11 @@ class DaqSession:
                 context=ErrorContext(task_name=self._spec.name, operation="_build_block"),
             )
         timing = self._spec.timing
-        rate_hz = timing.rate_hz if timing is not None else None
+        rate_hz = (
+            timing.rate_hz
+            if timing is not None and timing.mode is not AcquisitionMode.ON_DEMAND
+            else None
+        )
         dt_s = (1.0 / rate_hz) if rate_hz else None
         block = DaqBlock(
             device=self._spec.name,

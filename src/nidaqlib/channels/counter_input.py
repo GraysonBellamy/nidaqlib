@@ -48,6 +48,17 @@ class CounterFrequencyInput(ChannelSpec):
     max_val: float
     edge: Edge = Edge.RISING
 
+    def __post_init__(self) -> None:
+        """Validate the expected frequency range."""
+        ChannelSpec.__post_init__(self)
+        if self.min_val <= 0.0:
+            raise NIDaqValidationError(f"min_val must be > 0 for {self.display_name!r}")
+        if self.min_val >= self.max_val:
+            raise NIDaqValidationError(
+                f"min_val must be < max_val for {self.display_name!r}; "
+                f"got {self.min_val!r} >= {self.max_val!r}"
+            )
+
     def to_dict(self) -> dict[str, Any]:
         """Serialise; encode :class:`Edge` to its string value."""
         payload = ChannelSpec.to_dict(self)
@@ -85,6 +96,17 @@ class CounterPeriodInput(ChannelSpec):
     min_val: float
     max_val: float
     edge: Edge = Edge.RISING
+
+    def __post_init__(self) -> None:
+        """Validate the expected period range."""
+        ChannelSpec.__post_init__(self)
+        if self.min_val <= 0.0:
+            raise NIDaqValidationError(f"min_val must be > 0 for {self.display_name!r}")
+        if self.min_val >= self.max_val:
+            raise NIDaqValidationError(
+                f"min_val must be < max_val for {self.display_name!r}; "
+                f"got {self.min_val!r} >= {self.max_val!r}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise; encode :class:`Edge` to its string value."""
@@ -128,6 +150,10 @@ class CounterEdgeCountInput(ChannelSpec):
     edge: Edge = Edge.RISING
     initial_count: int = 0
     count_up: bool = True
+
+    def __post_init__(self) -> None:
+        """Validate common channel metadata."""
+        ChannelSpec.__post_init__(self)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise; encode :class:`Edge` to its string value."""

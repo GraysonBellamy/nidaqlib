@@ -12,6 +12,7 @@ import dataclasses
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Self
 
 from nidaqlib.channels.base import ChannelSpec
@@ -71,6 +72,15 @@ class Timing:
     source: str | None = None
     active_edge: Edge = Edge.RISING
 
+    def __post_init__(self) -> None:
+        """Validate timing parameters before they reach NI."""
+        if self.rate_hz <= 0.0:
+            raise NIDaqValidationError(f"rate_hz must be > 0, got {self.rate_hz!r}")
+        if self.samples_per_channel is not None and self.samples_per_channel <= 0:
+            raise NIDaqValidationError(
+                f"samples_per_channel must be > 0 when set, got {self.samples_per_channel!r}"
+            )
+
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-friendly dict.
 
@@ -106,7 +116,11 @@ class Timing:
         return cls(
             rate_hz=float(data["rate_hz"]),
             mode=mode,
-            samples_per_channel=data.get("samples_per_channel"),
+            samples_per_channel=(
+                int(data["samples_per_channel"])
+                if data.get("samples_per_channel") is not None
+                else None
+            ),
             source=data.get("source"),
             active_edge=edge,
         )
@@ -243,12 +257,23 @@ class TaskSpec:
         """
         if len(self.channels) == 0:
             raise NIDaqValidationError(f"TaskSpec {self.name!r}: at least one channel is required")
+        if not self.name:
+            raise NIDaqValidationError("TaskSpec.name must be a non-empty string")
+        channels = tuple(self.channels)
+        object.__setattr__(self, "channels", channels)
         for ch in self.channels:
             if not isinstance(ch, ChannelSpec):  # pyright: ignore[reportUnnecessaryIsInstance]
                 raise NIDaqValidationError(
                     f"TaskSpec {self.name!r}: channels must be ChannelSpec instances, "
                     f"got {type(ch).__name__}"
                 )
+        names = [ch.display_name for ch in self.channels]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise NIDaqValidationError(
+                f"TaskSpec {self.name!r}: duplicate channel display names {duplicates!r}"
+            )
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-friendly dict, dispatching channels by ``kind``."""

@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from nidaqlib.channels.base import ChannelSpec, register_channel_kind
+from nidaqlib.errors import NIDaqValidationError
 
 
 @register_channel_kind
@@ -49,6 +50,19 @@ class CounterPulseFrequency(ChannelSpec):
     idle_high: bool = False
     requires_confirm: bool = True
 
+    def __post_init__(self) -> None:
+        """Validate pulse-train parameters."""
+        ChannelSpec.__post_init__(self)
+        if self.frequency <= 0.0:
+            raise NIDaqValidationError(f"frequency must be > 0 for {self.display_name!r}")
+        if not 0.0 < self.duty_cycle < 1.0:
+            raise NIDaqValidationError(
+                f"duty_cycle must be in (0.0, 1.0) for {self.display_name!r}; "
+                f"got {self.duty_cycle!r}"
+            )
+        if self.initial_delay < 0.0:
+            raise NIDaqValidationError(f"initial_delay must be >= 0 for {self.display_name!r}")
+
 
 @register_channel_kind
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -71,6 +85,16 @@ class CounterPulseTime(ChannelSpec):
     initial_delay: float = 0.0
     idle_high: bool = False
     requires_confirm: bool = True
+
+    def __post_init__(self) -> None:
+        """Validate pulse timing parameters."""
+        ChannelSpec.__post_init__(self)
+        if self.high_time <= 0.0 or self.low_time <= 0.0:
+            raise NIDaqValidationError(
+                f"high_time and low_time must be > 0 for {self.display_name!r}"
+            )
+        if self.initial_delay < 0.0:
+            raise NIDaqValidationError(f"initial_delay must be >= 0 for {self.display_name!r}")
 
 
 @register_channel_kind
@@ -98,6 +122,16 @@ class CounterPulseTicks(ChannelSpec):
     initial_delay: int = 0
     idle_high: bool = False
     requires_confirm: bool = True
+
+    def __post_init__(self) -> None:
+        """Validate pulse tick parameters."""
+        ChannelSpec.__post_init__(self)
+        if self.high_ticks <= 0 or self.low_ticks <= 0:
+            raise NIDaqValidationError(
+                f"high_ticks and low_ticks must be > 0 for {self.display_name!r}"
+            )
+        if self.initial_delay < 0:
+            raise NIDaqValidationError(f"initial_delay must be >= 0 for {self.display_name!r}")
 
 
 __all__ = [

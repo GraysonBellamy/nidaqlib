@@ -40,16 +40,25 @@ real-hardware operation. Tests do not — `FakeDaqBackend` covers the test surfa
 ```python
 import anyio
 
-from nidaqlib import AnalogInputVoltage, TaskSpec, Timing, open_task
+from nidaqlib import AnalogInputVoltage, TaskSpec, open_task
 
 
 spec = TaskSpec(
     name="surface_temperatures",
     channels=[
-        AnalogInputVoltage("Dev1/ai0", name="surface_tc_mv", min_val=-0.1, max_val=0.1),
-        AnalogInputVoltage("Dev1/ai1", name="back_tc_mv", min_val=-0.1, max_val=0.1),
+        AnalogInputVoltage(
+            physical_channel="Dev1/ai0",
+            name="surface_tc_mv",
+            min_val=-0.1,
+            max_val=0.1,
+        ),
+        AnalogInputVoltage(
+            physical_channel="Dev1/ai1",
+            name="back_tc_mv",
+            min_val=-0.1,
+            max_val=0.1,
+        ),
     ],
-    timing=Timing(rate_hz=10.0),
 )
 
 

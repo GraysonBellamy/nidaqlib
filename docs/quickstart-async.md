@@ -83,7 +83,6 @@ from nidaqlib.sinks import InMemorySink, pipe
 spec = TaskSpec(
     name="slow_ai",
     channels=[AnalogInputVoltage(physical_channel="Dev1/ai0", name="pressure", unit="V")],
-    timing=Timing(rate_hz=10.0, mode=AcquisitionMode.ON_DEMAND),
 )
 async with open_task(spec) as session, InMemorySink() as sink:
     async with record_polled(session, rate_hz=2.0) as (stream, summary):

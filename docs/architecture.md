@@ -44,7 +44,7 @@ Two recorders live side by side; users pick which based on the timing
 model of their task:
 
 ```text
-TaskSpec.timing.mode == ON_DEMAND  ──>  record_polled (DaqReading)
+TaskSpec.timing is None / ON_DEMAND ──>  record_polled (DaqReading)
 TaskSpec.timing.mode in {FINITE, CONTINUOUS}  ──>  record (DaqBlock)
 ```
 
