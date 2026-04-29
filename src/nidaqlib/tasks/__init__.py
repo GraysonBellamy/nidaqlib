@@ -64,7 +64,7 @@ async def open_task(
     if autostart:
         # Validate up-front so a missing ``confirm_start`` for an actuating
         # task fails before any backend resources are allocated.
-        session._validate_start_safety(confirm=confirm_start)
+        session._validate_start_safety(confirm=confirm_start)  # pyright: ignore[reportPrivateUsage]
     try:
         await session.configure()
         if autostart:
