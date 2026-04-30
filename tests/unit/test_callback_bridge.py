@@ -28,7 +28,7 @@ from nidaqlib import (
     NIDaqTaskStateError,
     TaskSpec,
     Timing,
-    open_task,
+    open_device,
     record,
 )
 from nidaqlib.backend import FakeDaqBackend
@@ -60,7 +60,7 @@ async def test_happy_path() -> None:
     backend = FakeDaqBackend(read_block_default_shape=(1, 64))
     received: list[DaqBlock] = []
     async with (
-        open_task(_spec(), backend=backend, autostart=False) as session,
+        await open_device(_spec(), backend=backend, autostart=False) as session,
         record(
             session,
             chunk_size=64,
@@ -95,7 +95,7 @@ async def test_clean_shutdown_drainer_blocked() -> None:
     backend = FakeDaqBackend(read_block_default_shape=(1, 64))
     pre_threads = {t.ident for t in threading.enumerate()}
     with anyio.fail_after(2.0):
-        async with open_task(_spec(), backend=backend, autostart=False) as session:
+        async with await open_device(_spec(), backend=backend, autostart=False) as session:
             async with record(
                 session,
                 chunk_size=64,
@@ -128,7 +128,7 @@ async def test_cancel_mid_stream_stop_then_unregister_then_close() -> None:
     :class:`FakeDaqBackend` log.
     """
     backend = FakeDaqBackend(read_block_default_shape=(1, 32))
-    async with open_task(_spec(), backend=backend, autostart=False) as session:
+    async with await open_device(_spec(), backend=backend, autostart=False) as session:
         with anyio.move_on_after(0.5):
             async with record(
                 session,
@@ -144,7 +144,7 @@ async def test_cancel_mid_stream_stop_then_unregister_then_close() -> None:
                         # next iteration of the consumer is interrupted.
                         await anyio.sleep(10.0)
     # NI-mandated ordering: stop precedes unregister (otherwise NI -200986);
-    # close happens last via the outer open_task exit.
+    # close happens last via the outer open_device exit.
     stop_at = _operation_index(backend, "stop_task")
     unreg_at = _operation_index(backend, "unregister_every_n_samples")
     close_at = _operation_index(backend, "close_task")
@@ -165,7 +165,7 @@ async def test_register_must_precede_start() -> None:
     """
     backend = FakeDaqBackend(read_block_default_shape=(1, 16))
     async with (
-        open_task(_spec(), backend=backend, autostart=False) as session,
+        await open_device(_spec(), backend=backend, autostart=False) as session,
         record(
             session,
             chunk_size=16,
@@ -194,7 +194,7 @@ async def test_register_after_start_rejected_by_fake_backend() -> None:
     from nidaqlib.errors import NIDaqBackendError
 
     backend = FakeDaqBackend(read_block_default_shape=(1, 8))
-    async with open_task(_spec(), backend=backend) as session:
+    async with await open_device(_spec(), backend=backend) as session:
         # autostart=True by default — task is started.
         assert session.is_started
         with pytest.raises(NIDaqBackendError, match=r"already started"):
@@ -214,7 +214,7 @@ async def test_callback_survives_gc() -> None:
     backend = FakeDaqBackend(read_block_default_shape=(1, 16))
     received: list[DaqBlock] = []
     async with (
-        open_task(_spec(), backend=backend, autostart=False) as session,
+        await open_device(_spec(), backend=backend, autostart=False) as session,
         record(
             session,
             chunk_size=16,
@@ -240,7 +240,7 @@ async def test_callback_survives_gc() -> None:
 async def test_close_refuses_active_callback_bridge() -> None:
     """Direct close cannot bypass the recorder's ordered bridge shutdown."""
     backend = FakeDaqBackend(read_block_default_shape=(1, 16))
-    async with open_task(_spec(), backend=backend) as session:
+    async with await open_device(_spec(), backend=backend) as session:
         session._set_callback_handle(object())  # pyright: ignore[reportPrivateUsage]
         with pytest.raises(NIDaqTaskStateError, match="callback bridge"):
             await session.close()

@@ -4,7 +4,7 @@ Direct-port of sartoriuslib's ``manager.py``, shape-translated for DAQ:
 
 - Port-keyed locks → per-task locks plus a per-device lock for tasks that
   share a card (best-effort; NI is the final authority).
-- Sibling ``DeviceResult[T]`` → :class:`TaskResult[T]`.
+- Sibling ``DeviceResult[T]`` → :class:`DeviceResult[T]`.
 - The recorder consumed :class:`ErrorPolicy` in v0.1; the manager becomes
   the second consumer here.
 
@@ -47,11 +47,11 @@ if TYPE_CHECKING:
     from nidaqlib.tasks.spec import TaskSpec
 
 
-__all__ = ["DaqManager", "TaskResult"]
+__all__ = ["DaqManager", "DeviceResult"]
 
 
 @dataclass(frozen=True, slots=True)
-class TaskResult[T]:
+class DeviceResult[T]:
     """One per-task outcome from a manager group operation.
 
     Mirrors sibling ``DeviceResult[T]`` but is named for the task-level
@@ -145,7 +145,7 @@ class DaqManager:
                 :meth:`read_block`). :attr:`ErrorPolicy.RAISE` collects
                 errors into an :class:`ExceptionGroup`;
                 :attr:`ErrorPolicy.RETURN` surfaces them as
-                ``TaskResult.error`` rows and continues.
+                ``DeviceResult.error`` rows and continues.
         """
         self._error_policy = error_policy
         self._sessions: dict[str, DaqSession] = {}
@@ -185,7 +185,7 @@ class DaqManager:
     async def add(
         self,
         name: str,
-        spec: TaskSpec,
+        source: TaskSpec | DaqSession,
         *,
         backend: DaqBackend | None = None,
     ) -> DaqSession:
@@ -207,26 +207,40 @@ class DaqManager:
 
         Args:
             name: Manager-side label for this task. Must be unique.
-            spec: :class:`TaskSpec` describing the task.
+            source: Either a :class:`TaskSpec` (manager constructs a
+                fresh :class:`DaqSession`) or a pre-built
+                :class:`DaqSession` (manager registers it as-is). The
+                pre-built form aligns with the ecosystem ``add(name,
+                source)`` convention shared by :class:`watlowlib.WatlowManager`,
+                :class:`alicatlib.AlicatManager`, and
+                :class:`sartoriuslib.SartoriusManager`.
             backend: Optional :class:`DaqBackend`. Defaults to
-                :class:`NidaqmxBackend` (lazy import).
+                :class:`NidaqmxBackend` (lazy import). Ignored when
+                ``source`` is a :class:`DaqSession` (which already
+                carries its own backend).
 
         Returns:
             The :class:`DaqSession` registered under ``name``. Re-adding
-            the same ``(name, spec)`` returns the existing session and
+            the same ``(name, source)`` returns the existing session and
             bumps a refcount.
 
         Raises:
-            NIDaqTaskStateError: ``name`` already maps to a different spec,
-                or the manager is closed.
-            NIDaqResourceError: ``spec`` overlaps physical channels with
-                an already-managed task.
+            NIDaqTaskStateError: ``name`` already maps to a different
+                spec, or the manager is closed.
+            NIDaqResourceError: ``source`` overlaps physical channels
+                with an already-managed task.
         """
         if self._closed:
             raise NIDaqTaskStateError(
                 "DaqManager is closed",
                 context=ErrorContext(task_name=name, operation="manager.add"),
             )
+        if isinstance(source, DaqSession):
+            spec = source.spec
+            prebuilt: DaqSession | None = source
+        else:
+            spec = source
+            prebuilt = None
         async with self._global_lock:
             existing = self._sessions.get(name)
             if existing is not None:
@@ -238,12 +252,15 @@ class DaqManager:
                 self._refcounts[name] = self._refcounts.get(name, 1) + 1
                 return existing
 
-            if backend is None:
-                from nidaqlib.backend.nidaqmx_backend import NidaqmxBackend  # noqa: PLC0415
+            if prebuilt is not None:
+                session = prebuilt
+            else:
+                if backend is None:
+                    from nidaqlib.backend.nidaqmx_backend import NidaqmxBackend  # noqa: PLC0415
 
-                backend = NidaqmxBackend()
-            await self._preflight_conflicts(name, spec, backend)
-            session = DaqSession(spec, backend)
+                    backend = NidaqmxBackend()
+                await self._preflight_conflicts(name, spec, backend)
+                session = DaqSession(spec, backend)
             self._sessions[name] = session
             self._specs[name] = spec
             self._refcounts[name] = 1
@@ -380,7 +397,7 @@ class DaqManager:
         *,
         error_policy: ErrorPolicy | None = None,
         confirm: bool = False,
-    ) -> Mapping[str, TaskResult[None]]:
+    ) -> Mapping[str, DeviceResult[None]]:
         """Start one or more managed tasks. Defaults to all in add-order."""
 
         async def _do(session: DaqSession) -> None:
@@ -400,7 +417,7 @@ class DaqManager:
         *,
         error_policy: ErrorPolicy | None = None,
         confirm: bool = False,
-    ) -> Mapping[str, TaskResult[None]]:
+    ) -> Mapping[str, DeviceResult[None]]:
         """Arm ``slaves`` first, then start ``master``.
 
         Multi-task synchronisation requires strict ordering: each slave is
@@ -431,7 +448,7 @@ class DaqManager:
                 hardware immediately.
 
         Returns:
-            One :class:`TaskResult[None]` per task (``master`` plus every
+            One :class:`DeviceResult[None]` per task (``master`` plus every
             entry of ``slaves``), keyed by name.
 
         Raises:
@@ -449,7 +466,7 @@ class DaqManager:
             )
 
         policy = error_policy if error_policy is not None else self._error_policy
-        results: dict[str, TaskResult[None]] = {}
+        results: dict[str, DeviceResult[None]] = {}
         errors: list[BaseException] = []
         armed: list[str] = []
 
@@ -458,10 +475,10 @@ class DaqManager:
             try:
                 async with self._operation_locks(name):
                     await _configure_then_start(session, confirm=confirm)
-                results[name] = TaskResult(name=name, value=None, error=None)
+                results[name] = DeviceResult(name=name, value=None, error=None)
                 armed.append(name)
             except NIDaqError as exc:
-                results[name] = TaskResult(name=name, value=None, error=exc)
+                results[name] = DeviceResult(name=name, value=None, error=exc)
                 errors.append(exc)
                 # Roll back: stop every slave that armed before this one,
                 # in reverse order. Best-effort — collect rollback errors
@@ -474,7 +491,7 @@ class DaqManager:
                     except NIDaqError as rollback_exc:
                         errors.append(rollback_exc)
                 # Do not start the master.
-                results[master] = TaskResult(
+                results[master] = DeviceResult(
                     name=master,
                     value=None,
                     error=NIDaqTaskStateError(
@@ -494,9 +511,9 @@ class DaqManager:
         try:
             async with self._operation_locks(master):
                 await _configure_then_start(master_session, confirm=confirm)
-            results[master] = TaskResult(name=master, value=None, error=None)
+            results[master] = DeviceResult(name=master, value=None, error=None)
         except NIDaqError as exc:
-            results[master] = TaskResult(name=master, value=None, error=exc)
+            results[master] = DeviceResult(name=master, value=None, error=exc)
             errors.append(exc)
             if policy is ErrorPolicy.RAISE:
                 raise BaseExceptionGroup(
@@ -511,7 +528,7 @@ class DaqManager:
         names: Sequence[str] | None = None,
         *,
         error_policy: ErrorPolicy | None = None,
-    ) -> Mapping[str, TaskResult[None]]:
+    ) -> Mapping[str, DeviceResult[None]]:
         """Stop one or more managed tasks. Defaults to all in reverse-add."""
         targets = self._resolve_names(names)
         if names is None:
@@ -529,7 +546,7 @@ class DaqManager:
         *,
         timeout: float | None = None,  # noqa: ASYNC109 — NI per-call timeout, not coroutine
         error_policy: ErrorPolicy | None = None,
-    ) -> Mapping[str, TaskResult[DaqReading]]:
+    ) -> Mapping[str, DeviceResult[DaqReading]]:
         """Poll one or more tasks once each. Returns one :class:`DaqReading` per task."""
 
         async def _do(session: DaqSession) -> DaqReading:
@@ -549,7 +566,7 @@ class DaqManager:
         *,
         timeout: float | None = None,  # noqa: ASYNC109 — NI per-call timeout, not coroutine
         error_policy: ErrorPolicy | None = None,
-    ) -> Mapping[str, TaskResult[DaqBlock]]:
+    ) -> Mapping[str, DeviceResult[DaqBlock]]:
         """Read one block per task in parallel."""
 
         async def _do(session: DaqSession) -> DaqBlock:
@@ -591,7 +608,7 @@ class DaqManager:
         fn: Callable[[DaqSession], Awaitable[U]],
         *,
         error_policy: ErrorPolicy | None,
-    ) -> Mapping[str, TaskResult[U]]:
+    ) -> Mapping[str, DeviceResult[U]]:
         targets = self._resolve_names(names)
         return await self._for_each_targets(targets, op, fn, error_policy=error_policy)
 
@@ -602,9 +619,9 @@ class DaqManager:
         fn: Callable[[DaqSession], Awaitable[U]],
         *,
         error_policy: ErrorPolicy | None,
-    ) -> Mapping[str, TaskResult[U]]:
+    ) -> Mapping[str, DeviceResult[U]]:
         policy = error_policy if error_policy is not None else self._error_policy
-        results: dict[str, TaskResult[U]] = {}
+        results: dict[str, DeviceResult[U]] = {}
         errors: list[BaseException] = []
 
         async def _run_one(name: str) -> None:
@@ -612,9 +629,9 @@ class DaqManager:
             try:
                 async with self._operation_locks(name):
                     value = await fn(session)
-                results[name] = TaskResult(name=name, value=value, error=None)
+                results[name] = DeviceResult(name=name, value=value, error=None)
             except NIDaqError as exc:
-                results[name] = TaskResult(name=name, value=None, error=exc)
+                results[name] = DeviceResult(name=name, value=None, error=exc)
                 if policy is ErrorPolicy.RAISE:
                     errors.append(exc)
 

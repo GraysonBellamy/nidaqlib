@@ -25,7 +25,7 @@ from nidaqlib import (
     DaqBlock,
     TaskSpec,
     TdmsLogging,
-    open_task,
+    open_device,
     record,
 )
 
@@ -86,7 +86,7 @@ async def test_c1_tdms_log_only_emits_empty_stream(
     duration_s = 2.0
 
     async with (
-        open_task(spec) as session,
+        await open_device(spec) as session,
         record(session, chunk_size=max(2, int(tc_config.rate_hz // 2))) as (
             rx,
             summary,
@@ -147,7 +147,7 @@ async def test_c2_tdms_log_and_read_dual_path(
 
     seen: list[DaqBlock] = []
     async with (
-        open_task(spec) as session,
+        await open_device(spec) as session,
         record(session, chunk_size=chunk_size) as (rx, summary),
     ):
         async for block in rx:

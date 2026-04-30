@@ -3,7 +3,7 @@
 `nidaqlib` is async-first. This page walks through:
 
 1. Building a `TaskSpec` for one analog-input task.
-2. Opening it with `open_task` and reading one block.
+2. Opening it with `open_device` and reading one block.
 3. Running a continuous recorder.
 4. Polling a software-timed task at a fixed rate.
 
@@ -20,7 +20,7 @@ from nidaqlib import (
     AnalogInputVoltage,
     TaskSpec,
     Timing,
-    open_task,
+    open_device,
 )
 
 async def main() -> None:
@@ -33,7 +33,7 @@ async def main() -> None:
         timing=Timing(rate_hz=1000.0, mode=AcquisitionMode.FINITE,
                       samples_per_channel=1000),
     )
-    async with open_task(spec) as session:
+    async with await open_device(spec) as session:
         block = await session.acquire(samples_per_channel=1000)
         print(block.data.shape, block.sample_rate_hz)
 
@@ -51,7 +51,7 @@ plus a live `AcquisitionSummary`. The summary is mutated in place during
 the run; counters are safe to read at any time.
 
 ```python
-async with open_task(spec) as session:
+async with await open_device(spec) as session:
     async with record(session, chunk_size=1000) as (stream, summary):
         async for block in stream:
             process(block)
@@ -84,7 +84,7 @@ spec = TaskSpec(
     name="slow_ai",
     channels=[AnalogInputVoltage(physical_channel="Dev1/ai0", name="pressure", unit="V")],
 )
-async with open_task(spec) as session, InMemorySink() as sink:
+async with await open_device(spec) as session, InMemorySink() as sink:
     async with record_polled(session, rate_hz=2.0) as (stream, summary):
         await pipe(stream, sink, batch_size=10, flush_interval_s=2.0)
 ```

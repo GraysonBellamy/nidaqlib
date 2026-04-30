@@ -13,7 +13,7 @@ Companion to [`design.md`](design.md). Maps to the integration suite under
 
 A TC module exercises:
 
-- **Session lifecycle** — `open_task`, `DaqSession.read_block`, the
+- **Session lifecycle** — `open_device`, `DaqSession.read_block`, the
   `raw_task` escape hatch.
 - **Acquisition helpers** — `ThermocoupleInput`, `acquire` (finite),
   `record_polled` (software-timed scalar), `record` (block path,
@@ -162,7 +162,7 @@ present, and re-run.
 
 | ID | Test | What it proves |
 |---|---|---|
-| A1 | `test_a1_poll_returns_reading` | `open_task` + `poll()` round-trip on a TC. Provenance fields (`elapsed_s`, `monotonic_ns`, `midpoint_at`) populated and consistent. |
+| A1 | `test_a1_poll_returns_reading` | `open_device` + `poll()` round-trip on a TC. Provenance fields (`elapsed_s`, `monotonic_ns`, `midpoint_at`) populated and consistent. |
 | A2 | `test_a2_acquire_finite_block` | FINITE-mode `acquire(N)` returns one `(1, N)` `DaqBlock`; task is auto-stopped after the read. |
 | A3 | `test_a3_continuous_read_block_advances_counters` | Five sequential `read_block` calls produce monotonic `block_index` and `first_sample_index`; `task_started_at` anchor stable across the run. |
 | A4 | `test_a4_raw_task_escape_hatch` | `session.raw_task` returns the underlying `nidaqmx.Task` immediately after `start`; channel count matches the spec. |
@@ -189,7 +189,7 @@ uv run pytest tests/integration/test_a_session_lifecycle.py -v
 | B2 (×3) | `test_b2_record_polled_to_{sqlite,parquet,jsonl}` | Same shape as B1 into each row-oriented sink; round-trip via `sqlite3.connect` / `pyarrow.parquet.read_table` / line-by-line `json.loads`. |
 | B3 | `test_b3_record_blocks_to_parquet` | `record(chunk_size=…)` for 4 blocks. `block_index`/`first_sample_index` strictly increase by `chunk_size`; Parquet has one row group per block. |
 | B4 | `test_b4_polled_overflow_drop_oldest` | Producer ≫ consumer with `buffer_size=1` and `OverflowPolicy.DROP_OLDEST` → `summary.blocks_dropped > 0`. |
-| B5 | `test_b5_record_with_callback_bridge` | `use_callback_bridge=True` (the §11.3.2 path). Plumbing-only at TC rates. **Caller must use `open_task(spec, autostart=False)`** so the recorder can register the buffer event before NI starts the task — see [§11.3.2](design.md#1132-hardware-timed-high-rate). |
+| B5 | `test_b5_record_with_callback_bridge` | `use_callback_bridge=True` (the §11.3.2 path). Plumbing-only at TC rates. **Caller must use `open_device(spec, autostart=False)`** so the recorder can register the buffer event before NI starts the task — see [§11.3.2](design.md#1132-hardware-timed-high-rate). |
 | B6 | `test_b6_csv_sink_refuses_blocks_by_default` | `CsvSink(accept_blocks=False)` raises `NIDaqSinkSchemaError` on the first `write(block)` — §14.1's default-refusal. |
 | B7 | `test_b7_csv_sink_accept_blocks_scalarizes` | `CsvSink(accept_blocks=True)` writes one row per `(channel, sample)`. |
 | B8 | `test_b8_long_run_polled_drift` | 10 s `record_polled` at 5 Hz into SQLite; reading count within ±5 % of expected, monotonic timestamps strictly increasing, no errors / drops, SQLite row count matches. Catches accumulator / GC-stall bugs that escape the 2–3 s tests. |
@@ -240,7 +240,7 @@ short-circuit detection has regressed. Cancel and check
 
 | ID | Test | What it proves |
 |---|---|---|
-| D1 | `test_d1_sync_facade_poll` | `Daq.open_task(spec).poll()` from a sync function dispatched through `anyio.to_thread.run_sync`. Returns a sane temperature. |
+| D1 | `test_d1_sync_facade_poll` | `Daq.open_device(spec).poll()` from a sync function dispatched through `anyio.to_thread.run_sync`. Returns a sane temperature. |
 | D2 (×3) | `test_d2_nidaq_{info_json_lists_device, list_human_lists_device, list_device_json_lists_ai_channels}` | The two CLI tools that *do* work on TC modules report the configured device + AI channels. Subprocess-invoked via `python -m nidaqlib.cli.{info,list}` so we don't depend on installed-script wrappers. |
 | D3 | `test_d3_nidaq_read_voltage_mode_rejected_on_tc_module` | **Tripwire.** `nidaq-read` defaults to voltage AI; a TC-only module rejects it with a typed NI error and the CLI exits non-zero. If this ever starts passing without `--thermocouple-type`, the operator's module changed. |
 | D4 | `test_d4_nidaq_read_thermocouple_mode` | `nidaq-read --thermocouple-type K cDAQ1Mod1/ai1 --json` returns a sane temperature in `degC`. End-to-end validation of the CLI's TC mode (added after the bench day). |
@@ -263,10 +263,10 @@ is a tripwire that the voltage-mode rejection still happens.
 
 | ID | Test | What it proves |
 |---|---|---|
-| E1 | `test_e1_manager_single_task_read_block` | `DaqManager` with one two-channel TC task end-to-end. `read_block` fan-out emits one `TaskResult[DaqBlock]`. |
+| E1 | `test_e1_manager_single_task_read_block` | `DaqManager` with one two-channel TC task end-to-end. `read_block` fan-out emits one `DeviceResult[DaqBlock]`. |
 | E2 | `test_e2_refcount_holds_session_alive` | Duplicate `add` bumps refcount; one `remove` does not tear down; the second `remove` does. |
 | E3 | `test_e3_preflight_rejects_overlapping_channel` | Adding a second task that targets the same physical channel raises `NIDaqResourceError` (§15.3 best-effort preflight). |
-| E4 | `test_e4_invalid_spec_returns_taskresult_error` | Under `ErrorPolicy.RETURN`, a bogus device alias surfaces as `TaskResult.error` rather than raising; valid tasks remain operable. |
+| E4 | `test_e4_invalid_spec_returns_taskresult_error` | Under `ErrorPolicy.RETURN`, a bogus device alias surfaces as `DeviceResult.error` rather than raising; valid tasks remain operable. |
 | E5 | `test_e5_module_reservation_preflight_on_tc_module` | Adding two tasks targeting the same TC module fails at `add()` time with `NIDaqResourceError` referencing module-level reservation. The manager queries `backend.device_info(...)` on first add, caches the product type, and rejects subsequent adds against any whole-module-reserved device (NI 9211/9212/9213/9214). Skips on hardware not in the known reservation set. |
 
 ```bash

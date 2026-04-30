@@ -1,4 +1,4 @@
-"""Tests for :class:`DaqManager` (design doc §15) and :class:`TaskResult`.
+"""Tests for :class:`DaqManager` (design doc §15) and :class:`DeviceResult`.
 
 Covers add/remove ref-counting, LIFO close, group operations
 (`start`/`stop`/`poll`/`read_block`), `ExceptionGroup` semantics on
@@ -14,11 +14,11 @@ from nidaqlib import (
     AcquisitionMode,
     AnalogInputVoltage,
     DaqManager,
+    DeviceResult,
     ErrorPolicy,
     NIDaqReadError,
     NIDaqResourceError,
     NIDaqTaskStateError,
-    TaskResult,
     TaskSpec,
     Timing,
 )
@@ -163,7 +163,7 @@ async def test_start_and_read_block_fanout() -> None:
         results = await mgr.read_block(32)
         assert set(results) == {"a", "b"}
         for name, result in results.items():
-            assert isinstance(result, TaskResult)
+            assert isinstance(result, DeviceResult)
             assert result.ok is True
             assert result.value is not None
             assert result.value.samples_per_channel == 32

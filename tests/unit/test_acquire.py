@@ -11,7 +11,7 @@ from nidaqlib import (
     NIDaqTaskStateError,
     TaskSpec,
     Timing,
-    open_task,
+    open_device,
 )
 from nidaqlib.backend import FakeDaqBackend
 
@@ -27,7 +27,7 @@ async def test_acquire_returns_block_and_stops_task() -> None:
     backend = FakeDaqBackend(
         blocks={"finite_ai": [np.zeros((1, 200), dtype=np.float64)]},
     )
-    async with open_task(spec, backend=backend) as session:
+    async with await open_device(spec, backend=backend) as session:
         block = await session.acquire(samples_per_channel=200)
         assert block.samples_per_channel == 200
         assert block.data.shape == (1, 200)
@@ -50,7 +50,7 @@ async def test_finite_session_can_restart_after_acquire() -> None:
             ]
         },
     )
-    async with open_task(spec, backend=backend) as session:
+    async with await open_device(spec, backend=backend) as session:
         first = await session.acquire(samples_per_channel=2)
         assert not session.is_started
         await session.start()
@@ -73,7 +73,7 @@ async def test_acquire_rejects_continuous_task() -> None:
         timing=Timing(rate_hz=1000.0, mode=AcquisitionMode.CONTINUOUS),
     )
     backend = FakeDaqBackend(read_block_default_shape=(1, 100))
-    async with open_task(spec, backend=backend) as session:
+    async with await open_device(spec, backend=backend) as session:
         with pytest.raises(NIDaqTaskStateError):
             await session.acquire(samples_per_channel=100)
 
@@ -86,6 +86,6 @@ async def test_acquire_rejects_no_timing() -> None:
         channels=[AnalogInputVoltage(physical_channel="Dev1/ai0")],
     )
     backend = FakeDaqBackend(read_block_default_shape=(1, 100))
-    async with open_task(spec, backend=backend) as session:
+    async with await open_device(spec, backend=backend) as session:
         with pytest.raises(NIDaqTaskStateError):
             await session.acquire(samples_per_channel=100)

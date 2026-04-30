@@ -6,7 +6,7 @@ co-located libraries cooperate inside one :func:`anyio.create_task_group`:
 
 - ``AlicatManager`` streams MFC samples at 5 Hz into SQLite.
 - ``SartoriusManager`` streams balance samples at 2 Hz into SQLite.
-- A single ``open_task(...)`` materialises a 1 kHz two-channel analog-input
+- A single ``open_device(...)`` materialises a 1 kHz two-channel analog-input
   task; ``record(daq_session, chunk_size=1000)`` lands `DaqBlock` rows in a
   sidecar Parquet file.
 
@@ -18,7 +18,7 @@ DAQ-side (`record(daq_session, chunk_size=…)`) call sites is intentional:
   at the cadence the user requests.
 - For NI DAQ, the hardware sample clock owns timing. The recorder reads
   blocks of ``chunk_size`` samples whenever NI signals they are available.
-  A single ``open_task`` is the compact shape for the "single DAQ card,
+  A single ``open_device`` is the compact shape for the "single DAQ card,
   multiple serial instruments" pattern most labs run; ``DaqManager`` is
   available when the DAQ side needs fan-out across multiple tasks.
 
@@ -49,7 +49,7 @@ from nidaqlib import (
     DaqBlock,
     TaskSpec,
     Timing,
-    open_task,
+    open_device,
     record,
 )
 
@@ -156,7 +156,7 @@ async def main() -> None:
     async with (
         AlicatManager() as mfcs,
         SartoriusManager() as bals,
-        open_task(daq_spec) as daq_session,
+        await open_device(daq_spec) as daq_session,
     ):
         await mfcs.add("fuel", port_mfc)
         await bals.add("scale", port_bal)

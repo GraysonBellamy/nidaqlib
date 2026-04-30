@@ -1,8 +1,8 @@
-"""``Daq`` — sync entry point for :func:`~nidaqlib.tasks.open_task`.
+"""``Daq`` — sync entry point for :func:`~nidaqlib.tasks.open_device`.
 
 Pattern mirrors sartoriuslib's ``Sartorius`` and alicatlib's ``Alicat``:
 a thin namespace class whose classmethod opens a sync context manager
-that wraps the async :func:`open_task`.
+that wraps the async :func:`open_device`.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from nidaqlib.sync.portal import SyncPortal
 from nidaqlib.sync.session import SyncDaqSession
-from nidaqlib.tasks import open_task
+from nidaqlib.tasks import open_device
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -29,7 +29,7 @@ class Daq:
 
     @classmethod
     @contextlib.contextmanager  # pyright: ignore[reportDeprecated]
-    def open_task(
+    def open_device(
         cls,
         spec: TaskSpec,
         *,
@@ -39,7 +39,7 @@ class Daq:
     ) -> Iterator[SyncDaqSession]:
         """Open a :class:`SyncDaqSession` and tear it down on exit.
 
-        Mirrors :func:`nidaqlib.tasks.open_task` but yields a sync session.
+        Mirrors :func:`nidaqlib.tasks.open_device` but yields a sync session.
         Every operation on the returned session dispatches through a
         per-context :class:`SyncPortal`.
 
@@ -53,15 +53,18 @@ class Daq:
                 channels=[AnalogInputVoltage(physical_channel="Dev1/ai0")],
                 timing=Timing(rate_hz=1000),
             )
-            with Daq.open_task(spec) as session:
+            with Daq.open_device(spec) as session:
                 block = session.read_block(samples_per_channel=1000)
         """
         with SyncPortal() as portal:
-            acm = open_task(
+            async_session = portal.call(
+                open_device,
                 spec,
                 backend=backend,
                 timeout=timeout,
                 confirm_start=confirm_start,
             )
-            with portal.wrap_async_context_manager(acm) as async_session:
+            try:
                 yield SyncDaqSession(portal, async_session)
+            finally:
+                portal.call(async_session.close)

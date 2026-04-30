@@ -10,7 +10,7 @@ backpressure, schemas, sinks) we add it.
 
 ```
 nidaqlib/
-├── tasks/             # TaskSpec, Timing, TdmsLogging, DaqSession, open_task
+├── tasks/             # TaskSpec, Timing, TdmsLogging, DaqSession, open_device
 ├── channels/          # ChannelSpec + concrete subclasses (AI/AO/...)
 ├── backend/           # DaqBackend Protocol; NidaqmxBackend; FakeDaqBackend
 ├── streaming/         # record (block) + record_polled (scalar)
@@ -104,7 +104,7 @@ and is much harder to get wrong.
 When `nidaqlib` doesn't expose a NI feature you need, reach through:
 
 ```python
-async with open_task(spec) as session:
+async with await open_device(spec) as session:
     session.raw_task.timing.cfg_dig_edge_start_trig("/Dev1/PFI0")
     # ... use the raw nidaqmx.Task object directly
 ```

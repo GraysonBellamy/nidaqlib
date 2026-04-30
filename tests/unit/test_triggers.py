@@ -27,7 +27,7 @@ from nidaqlib import (
     TaskSpec,
     Timing,
     TriggerSpec,
-    open_task,
+    open_device,
 )
 from nidaqlib.backend import FakeDaqBackend
 
@@ -118,7 +118,7 @@ def test_taskspec_rejects_non_mapping_trigger() -> None:
 async def test_trigger_configured_after_timing() -> None:
     backend = FakeDaqBackend(read_block_default_shape=(1, 10))
     spec = _spec_with_trigger(DigitalEdgeStartTrigger(source="/Dev1/PFI0"))
-    async with open_task(spec, backend=backend):
+    async with await open_device(spec, backend=backend):
         ops = [op.op for op in backend.operations]
     timing_idx = ops.index("configure_timing")
     trigger_idx = ops.index("configure_trigger")
@@ -131,7 +131,7 @@ async def test_trigger_recorded_on_fake_task() -> None:
     backend = FakeDaqBackend(read_block_default_shape=(1, 10))
     trig = DigitalEdgeStartTrigger(source="/Dev1/PFI0", edge=Edge.FALLING)
     spec = _spec_with_trigger(trig)
-    async with open_task(spec, backend=backend) as session:
+    async with await open_device(spec, backend=backend) as session:
         del session  # we only care about the side-effect on the fake task
         # The fake task survives until the context exits — find it now.
         fake_task = next(iter(backend._tasks.values()))  # pyright: ignore[reportPrivateUsage]

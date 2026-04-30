@@ -17,7 +17,7 @@ from nidaqlib import (
     RunMetadata,
     TaskSpec,
     TdmsLogging,
-    open_task,
+    open_device,
     read_sidecar,
     record,
     sidecar_path_for,
@@ -60,7 +60,7 @@ async def test_f1_sidecar_round_trip(
     )
 
     async with (
-        open_task(spec) as session,
+        await open_device(spec) as session,
         record(session, chunk_size=max(2, int(tc_config.rate_hz // 2))) as (
             _rx,
             _summary,

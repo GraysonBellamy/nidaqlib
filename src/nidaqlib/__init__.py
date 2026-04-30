@@ -31,6 +31,8 @@ from nidaqlib.errors import (
     ErrorContext,
     NIDaqBackendError,
     NIDaqConfigurationError,
+    NIDaqConfirmationRequiredError,
+    NIDaqConnectionError,
     NIDaqDependencyError,
     NIDaqError,
     NIDaqReadError,
@@ -44,7 +46,7 @@ from nidaqlib.errors import (
     NIDaqValidationError,
     NIDaqWriteError,
 )
-from nidaqlib.manager import DaqManager, TaskResult
+from nidaqlib.manager import DaqManager, DeviceResult
 from nidaqlib.streaming import (
     AcquisitionSummary,
     ErrorPolicy,
@@ -61,7 +63,7 @@ from nidaqlib.tasks import (
     TaskBuilder,
     TaskSpec,
     Timing,
-    open_task,
+    open_device,
 )
 from nidaqlib.tasks.metadata import RunMetadata, read_sidecar, sidecar_path_for, write_sidecar
 from nidaqlib.tasks.models import DaqSample
@@ -94,6 +96,7 @@ __all__ = [
     "DaqReading",
     "DaqSample",
     "DaqSession",
+    "DeviceResult",
     "DigitalEdgeReferenceTrigger",
     "DigitalEdgeStartTrigger",
     "DigitalInput",
@@ -103,6 +106,8 @@ __all__ = [
     "ErrorPolicy",
     "NIDaqBackendError",
     "NIDaqConfigurationError",
+    "NIDaqConfirmationRequiredError",
+    "NIDaqConnectionError",
     "NIDaqDependencyError",
     "NIDaqError",
     "NIDaqReadError",
@@ -119,7 +124,6 @@ __all__ = [
     "OverflowPolicy",
     "RunMetadata",
     "TaskBuilder",
-    "TaskResult",
     "TaskSpec",
     "TdmsLogging",
     "ThermocoupleInput",
@@ -127,7 +131,7 @@ __all__ = [
     "TriggerSpec",
     "__version__",
     "config_from_env",
-    "open_task",
+    "open_device",
     "read_sidecar",
     "record",
     "record_polled",

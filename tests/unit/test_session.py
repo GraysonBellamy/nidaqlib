@@ -15,7 +15,7 @@ from nidaqlib import (
     NIDaqValidationError,
     TaskSpec,
     Timing,
-    open_task,
+    open_device,
 )
 from nidaqlib.backend import FakeDaqBackend
 
@@ -34,7 +34,7 @@ async def test_poll_rejected_for_continuous_task() -> None:
     """Continuous + started → :class:`NIDaqTaskStateError`. Design doc §9.2."""
     spec = _make_spec(mode=AcquisitionMode.CONTINUOUS)
     backend = FakeDaqBackend(read_block_default_shape=(1, 1))
-    async with open_task(spec, backend=backend) as session:
+    async with await open_device(spec, backend=backend) as session:
         with pytest.raises(NIDaqTaskStateError):
             await session.poll()
 
@@ -43,7 +43,7 @@ async def test_poll_rejected_for_continuous_task() -> None:
 async def test_poll_rejected_for_finite_task() -> None:
     spec = _make_spec(mode=AcquisitionMode.FINITE)
     backend = FakeDaqBackend(read_block_default_shape=(1, 1))
-    async with open_task(spec, backend=backend) as session:
+    async with await open_device(spec, backend=backend) as session:
         with pytest.raises(NIDaqTaskStateError):
             await session.poll()
 
@@ -52,7 +52,7 @@ async def test_poll_rejected_for_finite_task() -> None:
 async def test_poll_works_for_on_demand_task() -> None:
     spec = _make_spec(mode=AcquisitionMode.ON_DEMAND)
     backend = FakeDaqBackend(read_block_default_shape=(1, 1))
-    async with open_task(spec, backend=backend) as session:
+    async with await open_device(spec, backend=backend) as session:
         reading = await session.poll()
     assert reading.device == "ai_test"
     assert "ch0" in reading.values
@@ -64,7 +64,7 @@ async def test_poll_works_for_no_timing_task() -> None:
     """A task with no Timing is on-demand by definition."""
     spec = _make_spec(mode=None)
     backend = FakeDaqBackend(read_block_default_shape=(1, 1))
-    async with open_task(spec, backend=backend) as session:
+    async with await open_device(spec, backend=backend) as session:
         reading = await session.poll()
     assert reading.values["ch0"] is not None
 
@@ -73,7 +73,7 @@ async def test_poll_works_for_no_timing_task() -> None:
 async def test_session_state_after_close() -> None:
     spec = _make_spec(mode=AcquisitionMode.CONTINUOUS)
     backend = FakeDaqBackend(read_block_default_shape=(1, 10))
-    async with open_task(spec, backend=backend) as session:
+    async with await open_device(spec, backend=backend) as session:
         await session.read_block(10)
     assert session.is_closed
     assert not session.is_started
@@ -85,7 +85,7 @@ async def test_session_state_after_close() -> None:
 async def test_block_index_and_first_sample_advance() -> None:
     spec = _make_spec(mode=AcquisitionMode.CONTINUOUS)
     backend = FakeDaqBackend(read_block_default_shape=(1, 100))
-    async with open_task(spec, backend=backend) as session:
+    async with await open_device(spec, backend=backend) as session:
         b0 = await session.read_block(100)
         b1 = await session.read_block(100)
     assert b0.block_index == 0
@@ -101,6 +101,6 @@ async def test_read_rejects_non_analog_input_task() -> None:
         channels=[DigitalInput(physical_channel="Dev1/port0/line0", name="line0")],
     )
     backend = FakeDaqBackend(read_block_default_shape=(1, 1))
-    async with open_task(spec, backend=backend) as session:
+    async with await open_device(spec, backend=backend) as session:
         with pytest.raises(NIDaqValidationError, match="analog-input"):
             await session.poll()

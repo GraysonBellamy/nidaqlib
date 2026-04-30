@@ -285,7 +285,7 @@ Those concepts are either owned by NI-DAQmx or unnecessary at this level. Resist
 ```python
 import anyio
 
-from nidaqlib import AnalogInputVoltage, TaskSpec, open_task
+from nidaqlib import AnalogInputVoltage, TaskSpec, open_device
 
 
 spec = TaskSpec(
@@ -308,7 +308,7 @@ spec = TaskSpec(
 
 
 async def main() -> None:
-    async with open_task(spec) as task:
+    async with await open_device(spec) as task:
         reading = await task.poll()
         print(reading.values)
 
@@ -321,7 +321,7 @@ anyio.run(main)
 ```python
 import anyio
 
-from nidaqlib import AcquisitionMode, AnalogInputVoltage, TaskSpec, Timing, open_task
+from nidaqlib import AcquisitionMode, AnalogInputVoltage, TaskSpec, Timing, open_device
 from nidaqlib.streaming import record
 from nidaqlib.sinks import ParquetSink
 
@@ -341,7 +341,7 @@ spec = TaskSpec(
 
 
 async def main() -> None:
-    async with open_task(spec) as task:
+    async with await open_device(spec) as task:
         async with (
             record(task, chunk_size=1000) as stream,
             ParquetSink("run.parquet") as sink,
@@ -359,7 +359,7 @@ anyio.run(main)
 from nidaqlib.sync import Daq
 
 
-with Daq.open_task(spec) as task:
+with Daq.open_device(spec) as task:
     block = task.read_block(samples_per_channel=1000)
     print(block.data.shape)
 ```
@@ -367,7 +367,7 @@ with Daq.open_task(spec) as task:
 ### 7.4 Escape hatch
 
 ```python
-async with open_task(spec) as task:
+async with await open_device(spec) as task:
     raw_task = task.raw_task
     # Use raw nidaqmx.Task for unsupported advanced features.
 ```
@@ -637,7 +637,7 @@ class DaqSession:
 
 ```python
 @asynccontextmanager
-async def open_task(
+async def open_device(
     spec: TaskSpec,
     *,
     backend: DaqBackend | None = None,
@@ -862,7 +862,7 @@ async def _drain() -> None:
 
 NI requires `register_every_n_samples_acquired_into_buffer_event` to be called **before** `task.start()`. A registration on a running task is rejected with status code **-200960** ("Register all your DAQmx software events prior to starting the task"). The fake backend mirrors this invariant; the unit suite would otherwise pass while the real NI driver rejects the same code.
 
-The bridge therefore needs a `DaqSession` in the **configured-but-not-yet-started** state at registration time. `DaqSession` exposes this seam via `configure()` (allocates the NI task, applies channels / timing / logging / triggers) separately from `start()` (issues `task.start()`). `open_task(spec, autostart=False)` yields a configured-not-started session for this exact path.
+The bridge therefore needs a `DaqSession` in the **configured-but-not-yet-started** state at registration time. `DaqSession` exposes this seam via `configure()` (allocates the NI task, applies channels / timing / logging / triggers) separately from `start()` (issues `task.start()`). `open_device(spec, autostart=False)` yields a configured-not-started session for this exact path.
 
 ```python
 # 1. configure_sync — channels, timing, logging, triggers; raw_task is now usable.
@@ -879,7 +879,7 @@ await session.start()
 
 ```python
 async with (
-    open_task(spec, autostart=False) as session,
+    await open_device(spec, autostart=False) as session,
     record(session, chunk_size=N, use_callback_bridge=True) as (rx, summary),
 ):
     async for block in rx:
@@ -912,7 +912,7 @@ async def _cleanup_on_exit() -> None:
 
             # 4. Wait for the drainer to exit cleanly (no leaked thread).
             await drain_done.wait()
-            # 5. session.close() runs in open_task __aexit__ — closes the NI
+            # 5. session.close() runs in open_device __aexit__ — closes the NI
             #    task. close() checks _started and skips redundant stop.
 ```
 
@@ -1076,7 +1076,7 @@ The `error: NIDaq*Error | None` field on `DaqReading` and `DaqBlock` is wired ex
 - Under `RAISE`, `record.error` is always `None`. A consumer relying on the field for branching does not need to inspect it.
 - Under `RETURN`, the recorder MUST advance the timing fields (`monotonic_ns`, `block_index`, etc.) even on error records, so the consumer can detect dropped intervals. `data` may be a zero-filled or empty array on error blocks; consumers MUST gate on `error is None` before using `data`.
 - Sessions (direct `read_block`/`poll`) ALWAYS raise typed errors regardless of any policy — the policy is a recorder-level construct, not a session-level one.
-- `DaqManager` layers its own `ErrorPolicy.RAISE | RETURN` over per-task results via `TaskResult[T]`. The recorder policy and the manager policy compose: a `DaqManager.read_block(...)` under `RETURN` with a recorder under `RAISE` returns `TaskResult[DaqBlock]` with `.error` set (the raised error becomes a wrapped result).
+- `DaqManager` layers its own `ErrorPolicy.RAISE | RETURN` over per-task results via `DeviceResult[T]`. The recorder policy and the manager policy compose: a `DaqManager.read_block(...)` under `RETURN` with a recorder under `RAISE` returns `DeviceResult[DaqBlock]` with `.error` set (the raised error becomes a wrapped result).
 
 ### 13.3 Overflow policies
 
@@ -1283,20 +1283,20 @@ class DaqManager:
     def get(self, name: str) -> DaqSession:
         ...
 
-    async def start(self, names: Sequence[str] | None = None) -> Mapping[str, TaskResult[None]]:
+    async def start(self, names: Sequence[str] | None = None) -> Mapping[str, DeviceResult[None]]:
         ...
 
-    async def stop(self, names: Sequence[str] | None = None) -> Mapping[str, TaskResult[None]]:
+    async def stop(self, names: Sequence[str] | None = None) -> Mapping[str, DeviceResult[None]]:
         ...
 
-    async def poll(self, names: Sequence[str] | None = None) -> Mapping[str, TaskResult[DaqReading]]:
+    async def poll(self, names: Sequence[str] | None = None) -> Mapping[str, DeviceResult[DaqReading]]:
         ...
 
     async def read_block(
         self,
         samples_per_channel: int,
         names: Sequence[str] | None = None,
-    ) -> Mapping[str, TaskResult[DaqBlock]]:
+    ) -> Mapping[str, DeviceResult[DaqBlock]]:
         ...
 ```
 
@@ -1803,7 +1803,7 @@ labacq-core
 Potential shared components:
 
 - `ErrorPolicy`
-- `DeviceResult` / `TaskResult`
+- `DeviceResult` / `DeviceResult`
 - sink interfaces
 - CSV/JSONL/SQLite/Parquet/Postgres sinks
 - recorder utility types
@@ -1920,14 +1920,14 @@ from nidaqlib import (
     NIDaqTimeoutError,
     NidaqConfig,
     RunMetadata,
-    TaskResult,
+    DeviceResult,
     config_from_env,
     TaskSpec,
     TdmsLogging,
     ThermocoupleInput,
     Timing,
     TriggerSpec,
-    open_task,
+    open_device,
 )
 
 from nidaqlib.streaming import (
@@ -2163,9 +2163,9 @@ For readers already steeped in the existing two libraries, this is the file-by-f
 | `commands/` | **Skip entirely.** | `task.ai_channels.add_ai_voltage_chan(...)` is already typed and discoverable. A `Command` catalog over it adds no value. **Resist this temptation hardest** — symmetry-for-its-own-sake here is what kills the package. |
 | `registry/` | **Mostly skip.** | Re-export the `nidaqmx.constants` enums the public API uses (`AcquisitionType`, `TerminalConfiguration`, `VoltageUnits`, `ThermocoupleType`, `LoggingMode`, `LoggingOperation`, `Edge`). Don't generate a parallel codes table. A small unit registry may earn its keep later. |
 | `devices/base.py`, `devices/session.py` | **Port the *shape*, not the implementation.** `DaqSession` plays the role of the `Session`/`Device` facade — every operation goes through one dispatch point that captures timing, holds the lock, and wraps errors. | The session no longer holds a serial port + protocol client; it holds a `nidaqmx.Task` (via the backend) + the `TaskSpec`. Note: sartoriuslib's facade is `devices/balance.py`, not `devices/base.py` — the shape generalizes. |
-| `devices/factory.py` (`open_device`) | **Direct port.** `open_task(spec, *, backend=None, timeout=10.0)`. | Returns an async CM that drives the backend setup. The object being opened is a NI task, not a serial device. |
+| `devices/factory.py` (`open_device`) | **Direct port.** `open_device(spec, *, backend=None, timeout=10.0)`. | Returns an async CM that drives the backend setup. The object being opened is a NI task, not a serial device. |
 | `devices/discovery.py` | **Direct port, trivial body.** Wraps `nidaqmx.system.System.local()` and per-device `ai_physical_chans` / `ao_physical_chans` / `di_lines` / `do_lines` enumeration into a `DeviceInfo` of the same shape the other libs return. | See §19. |
-| `manager.py` | **Direct port.** `DaqManager` with `add` / `remove` / `close`, `ErrorPolicy.RAISE` / `RETURN`, `TaskResult`. The port-keyed lock becomes a per-Task lock (or per-device lock when serializing tasks that share a card — see §15.3). LIFO unwind, ref-counting, `ExceptionGroup`-on-failure semantics — all identical. | This is one of the cleanest ports. The Manager's job (named-resource lifecycle + group dispatch + structured error handling) is domain-agnostic. |
+| `manager.py` | **Direct port.** `DaqManager` with `add` / `remove` / `close`, `ErrorPolicy.RAISE` / `RETURN`, `DeviceResult`. The port-keyed lock becomes a per-Task lock (or per-device lock when serializing tasks that share a card — see §15.3). LIFO unwind, ref-counting, `ExceptionGroup`-on-failure semantics — all identical. | This is one of the cleanest ports. The Manager's job (named-resource lifecycle + group dispatch + structured error handling) is domain-agnostic. |
 | `streaming/sample.py` | **Replaced by `streaming/sample.py` (DaqSample) + `streaming/block.py` (DaqBlock).** | The ecosystem `Sample` schemas have already diverged between alicatlib and sartoriuslib (see §8.8). Don't add `device_time` cross-cutting to either lib — it would be `None` 99% of the time and the schemas aren't parity-aligned anyway. `DaqReading` is the cross-instrument bridge. |
 | `streaming/recorder.py` | **Port the absolute-target loop for software-timed mode (§11.3.1). Add a hardware-timed path (§11.3.2).** | `record_polled` mirrors alicatlib's loop exactly. `record` is new — it owns the driver-thread → `queue.SimpleQueue` → anyio bridge for hardware-clocked acquisition. |
 | `sinks/` (whole tree) | **Direct copy.** Same `SampleSink` / `BlockSink` Protocols, same `pipe()` driver, same `sample_to_row`, same Csv/Jsonl/Sqlite/Parquet/Postgres/Memory implementations. Add `TdmsSink` (driver-side, see §14.6). | This is the single biggest reason to build the package: rows from a NI card land in the same SQLite table shape as rows from a flow controller. Each sink declares which data types it accepts (`DaqReading`, `DaqSample`, `DaqBlock`). |

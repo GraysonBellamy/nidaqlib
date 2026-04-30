@@ -25,7 +25,7 @@ from nidaqlib import (
     OverflowPolicy,
     TaskSpec,
     Timing,
-    open_task,
+    open_device,
     record_polled,
 )
 from nidaqlib.backend import FakeDaqBackend
@@ -44,7 +44,7 @@ async def test_emits_readings_at_cadence() -> None:
     """Polled recorder emits readings — values come from the fake's poll path."""
     backend = FakeDaqBackend(read_block_default_shape=(1, 1))
     async with (
-        open_task(_make_spec(), backend=backend) as session,
+        await open_device(_make_spec(), backend=backend) as session,
         record_polled(session, rate_hz=50.0, buffer_size=8) as (rx, _summary),
     ):
         seen: list[DaqReading] = []
@@ -67,7 +67,7 @@ async def test_error_policy_return_emits_error_reading() -> None:
         read_errors={"polled_ai": [err]},
     )
     async with (
-        open_task(_make_spec(), backend=backend) as session,
+        await open_device(_make_spec(), backend=backend) as session,
         record_polled(
             session,
             rate_hz=50.0,
@@ -92,7 +92,7 @@ async def test_drop_oldest_does_not_block_producer() -> None:
     """A full outbound buffer should evict old readings instead of stalling."""
     backend = FakeDaqBackend(read_block_default_shape=(1, 1))
     async with (
-        open_task(_make_spec(), backend=backend) as session,
+        await open_device(_make_spec(), backend=backend) as session,
         record_polled(
             session,
             rate_hz=500.0,
@@ -114,7 +114,7 @@ def test_invalid_rate_hz() -> None:
 
     async def _check() -> None:
         backend = FakeDaqBackend(read_block_default_shape=(1, 1))
-        async with open_task(_make_spec(), backend=backend) as session:
+        async with await open_device(_make_spec(), backend=backend) as session:
             with pytest.raises(ValueError, match="rate_hz"):
                 async with record_polled(session, rate_hz=0.0):
                     pass

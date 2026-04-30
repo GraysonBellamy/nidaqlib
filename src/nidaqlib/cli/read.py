@@ -26,7 +26,7 @@ from nidaqlib import (
     NIDaqError,
     TaskSpec,
     ThermocoupleInput,
-    open_task,
+    open_device,
     record_polled,
 )
 
@@ -159,7 +159,7 @@ def _format_reading(reading: DaqReading, *, as_json: bool) -> str:
 
 async def _one_shot(args: argparse.Namespace) -> int:
     spec = _build_spec(args)
-    async with open_task(spec) as session:
+    async with await open_device(spec) as session:
         reading = await session.poll()
     print(_format_reading(reading, as_json=args.json))
     return 0
@@ -172,7 +172,7 @@ async def _streamed(args: argparse.Namespace) -> int:
     spec = _build_spec(args)
     deadline = anyio.current_time() + args.duration
     async with (
-        open_task(spec) as session,
+        await open_device(spec) as session,
         record_polled(session, rate_hz=args.rate, buffer_size=32) as (rx, _summary),
     ):
         async for payload in rx:

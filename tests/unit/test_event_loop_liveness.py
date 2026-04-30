@@ -22,7 +22,7 @@ from nidaqlib import (
     AnalogInputVoltage,
     TaskSpec,
     Timing,
-    open_task,
+    open_device,
 )
 from nidaqlib.backend.fake import FakeDaqBackend, _FakeTask  # pyright: ignore[reportPrivateUsage]
 
@@ -87,7 +87,7 @@ async def test_read_block_does_not_block_event_loop() -> None:
             with anyio.move_on_after(0.01):
                 await stop.wait()
 
-    async with open_task(spec, backend=spy) as session, anyio.create_task_group() as tg:
+    async with await open_device(spec, backend=spy) as session, anyio.create_task_group() as tg:
         tg.start_soon(_heartbeat)
         with anyio.fail_after(2.0):
             # Issue one slow read that takes 500 ms.

@@ -1,6 +1,6 @@
 """Block D — sync facade + CLI smoke against real TC hardware.
 
-The sync facade is exercised end-to-end via :class:`Daq.open_task` running
+The sync facade is exercised end-to-end via :class:`Daq.open_device` running
 in a worker thread (so we do not collide with the integration suite's
 top-level event loop).
 
@@ -35,7 +35,7 @@ pytestmark = pytest.mark.anyio
 
 
 # ---------------------------------------------------------------------------
-# D1 — Daq.open_task → poll() in a sync context, dispatched from anyio
+# D1 — Daq.open_device → poll() in a sync context, dispatched from anyio
 # ---------------------------------------------------------------------------
 
 
@@ -43,7 +43,7 @@ async def test_d1_sync_facade_poll(
     tc_config: TcHardwareConfig,
     tc_spec_on_demand: TaskSpec,
 ) -> None:
-    """``Daq.open_task`` in a worker thread returns a sane :class:`DaqReading`.
+    """``Daq.open_device`` in a worker thread returns a sane :class:`DaqReading`.
 
     Driving the sync facade from a sync function nested inside ``run_sync``
     is the canonical mode (a script or notebook); we exercise that here
@@ -51,7 +51,7 @@ async def test_d1_sync_facade_poll(
     """
 
     def _sync_capture() -> dict[str, float]:
-        with Daq.open_task(tc_spec_on_demand) as session:
+        with Daq.open_device(tc_spec_on_demand) as session:
             assert session.is_started is True
             reading = session.poll()
         # Coerce to a plain dict so the worker-thread payload contains no

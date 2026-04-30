@@ -22,6 +22,7 @@ from nidaqlib.sinks.csv import CsvSink
 from nidaqlib.sinks.jsonl import JsonlSink
 from nidaqlib.sinks.memory import InMemorySink
 from nidaqlib.sinks.parquet import ParquetSink
+from nidaqlib.sinks.postgres import PostgresConfig, PostgresSink
 from nidaqlib.sinks.sqlite import SqliteSink
 
 __all__ = [
@@ -30,6 +31,8 @@ __all__ = [
     "InMemorySink",
     "JsonlSink",
     "ParquetSink",
+    "PostgresConfig",
+    "PostgresSink",
     "ReadingSink",
     "SampleSink",
     "SqliteSink",

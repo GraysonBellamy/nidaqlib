@@ -51,7 +51,7 @@ def record(
     Example::
 
         with (
-            Daq.open_task(spec) as session,
+            Daq.open_device(spec) as session,
             record(session, chunk_size=1000) as (stream, summary),
         ):
             for block in stream:

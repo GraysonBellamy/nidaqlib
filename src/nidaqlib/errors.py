@@ -7,12 +7,19 @@ doc §16.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass, field, fields, replace
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Self
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
-def _empty_extra() -> dict[str, Any]:
-    return {}
+_EMPTY_EXTRA: Mapping[str, Any] = MappingProxyType({})
+
+
+def _empty_extra() -> Mapping[str, Any]:
+    return _EMPTY_EXTRA
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +30,10 @@ class ErrorContext:
     DAQ-specific keys (``task_name``, ``physical_channel``, ``ni_error_code``)
     let cross-instrument log readers join NIDaq exceptions to the same task /
     channel / error-code identifiers visible from raw ``nidaqmx-python``.
+
+    ``extra`` accepts any ``Mapping`` and is always frozen into a read-only
+    :class:`types.MappingProxyType` at construction so the shared empty
+    sentinel can never be mutated through ``error.context.extra[k] = v``.
     """
 
     task_name: str | None = None
@@ -30,11 +41,44 @@ class ErrorContext:
     physical_channel: str | None = None
     operation: str | None = None
     ni_error_code: int | None = None
-    extra: dict[str, Any] = field(default_factory=_empty_extra)
+    extra: Mapping[str, Any] = field(default_factory=_empty_extra)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.extra, MappingProxyType):
+            object.__setattr__(self, "extra", MappingProxyType(dict(self.extra)))
+
+    def merged(self, **updates: Any) -> Self:
+        """Return a new context with ``updates`` overlaid. Unknown keys go to ``extra``."""
+        known: dict[str, Any] = {}
+        extra_updates: dict[str, Any] = {}
+        for key, value in updates.items():
+            if key in _CONTEXT_KNOWN_FIELDS:
+                known[key] = value
+            else:
+                extra_updates[key] = value
+
+        new_extra: Mapping[str, Any] = (
+            MappingProxyType({**self.extra, **extra_updates}) if extra_updates else self.extra
+        )
+        return replace(self, **known, extra=new_extra)
+
+
+_CONTEXT_KNOWN_FIELDS: frozenset[str] = frozenset(
+    f.name for f in fields(ErrorContext) if f.name != "extra"
+)
+
+
+_EMPTY_CONTEXT = ErrorContext()
 
 
 class NIDaqError(Exception):
-    """Base class for every :mod:`nidaqlib` exception."""
+    """Base class for every :mod:`nidaqlib` exception.
+
+    Carries a typed :class:`ErrorContext`. The ``message`` is the human-readable
+    summary; the context is the machine-readable detail.
+    """
+
+    context: ErrorContext
 
     def __init__(self, message: str = "", *, context: ErrorContext | None = None) -> None:
         """Initialise with a human-readable message and optional context.
@@ -45,7 +89,46 @@ class NIDaqError(Exception):
                 yields an empty :class:`ErrorContext`.
         """
         super().__init__(message)
-        self.context = context or ErrorContext()
+        self.context = context if context is not None else _EMPTY_CONTEXT
+
+    def with_context(self, **updates: Any) -> Self:
+        """Return a copy of this error with its context updated.
+
+        Useful when an inner layer raises and an outer layer wants to enrich
+        the context (for instance adding ``task_name`` or ``operation``).
+        """
+        cls = type(self)
+        new = cls.__new__(cls)
+        new.args = self.args
+        try:
+            new.__dict__.update(self.__dict__)
+        except AttributeError:  # pragma: no cover — no slotted subclass today
+            for slot in getattr(cls, "__slots__", ()):
+                if hasattr(self, slot):
+                    object.__setattr__(new, slot, getattr(self, slot))
+        new.context = self.context.merged(**updates)
+        new.__cause__ = self.__cause__
+        new.__context__ = self.__context__
+        new.__traceback__ = self.__traceback__
+        return new
+
+    def __str__(self) -> str:
+        base = super().__str__()
+        ctx = self.context
+        bits: list[str] = []
+        if ctx.task_name is not None:
+            bits.append(f"task={ctx.task_name}")
+        if ctx.channel_name is not None:
+            bits.append(f"channel={ctx.channel_name}")
+        if ctx.physical_channel is not None:
+            bits.append(f"physical={ctx.physical_channel}")
+        if ctx.operation is not None:
+            bits.append(f"op={ctx.operation}")
+        if ctx.ni_error_code is not None:
+            bits.append(f"ni_error_code={ctx.ni_error_code}")
+        if ctx.extra:
+            bits.append(f"extra={dict(ctx.extra)!r}")
+        return f"{base} [{', '.join(bits)}]" if bits else base
 
 
 # --- Configuration / validation ----------------------------------------------
@@ -57,6 +140,17 @@ class NIDaqConfigurationError(NIDaqError):
 
 class NIDaqValidationError(NIDaqConfigurationError):
     """Request validation failed before any I/O."""
+
+
+class NIDaqConfirmationRequiredError(NIDaqConfigurationError):
+    """A safety-gated start was attempted without ``confirm=True``.
+
+    Raised by :func:`open_device` and :meth:`DaqManager.start` when a task
+    that drives hardware (counter pulse outputs, analog outputs) is started
+    without the explicit ``confirm=True`` opt-in. See design §5.10 (safe-start
+    gate) and the ecosystem ``ConfirmationRequiredError`` convention shared
+    with :mod:`watlowlib` and :mod:`sartoriuslib`.
+    """
 
 
 # --- Lifecycle ---------------------------------------------------------------
@@ -87,6 +181,18 @@ class NIDaqWriteError(NIDaqError):
 
 class NIDaqTimeoutError(NIDaqError):
     """An NI read or write exceeded its configured timeout."""
+
+
+class NIDaqConnectionError(NIDaqError):
+    """Communication with the NI backend was lost or could not be established.
+
+    Aligns with the ecosystem ``ConnectionError`` convention (matching
+    :class:`watlowlib.WatlowConnectionError`,
+    :class:`alicatlib.AlicatConnectionError`,
+    :class:`sartoriuslib.SartoriusConnectionError`). NI's backend rarely
+    distinguishes "connection lost" from generic backend errors at the
+    driver layer; this class is the family seam for those that do.
+    """
 
 
 # --- Resource conflicts ------------------------------------------------------
@@ -147,6 +253,8 @@ __all__ = [
     "ErrorContext",
     "NIDaqBackendError",
     "NIDaqConfigurationError",
+    "NIDaqConfirmationRequiredError",
+    "NIDaqConnectionError",
     "NIDaqDependencyError",
     "NIDaqError",
     "NIDaqReadError",

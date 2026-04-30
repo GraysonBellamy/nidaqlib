@@ -27,7 +27,7 @@ from nidaqlib import (
     NIDaqSinkSchemaError,
     OverflowPolicy,
     TaskSpec,
-    open_task,
+    open_device,
     record,
     record_polled,
 )
@@ -65,7 +65,7 @@ async def test_b1_record_polled_in_memory(
 
     sink = InMemorySink()
     async with (
-        open_task(tc_spec_on_demand) as session,
+        await open_device(tc_spec_on_demand) as session,
         sink,
         record_polled(session, rate_hz=target_rate_hz, buffer_size=16) as (rx, summary),
     ):
@@ -108,7 +108,7 @@ async def _drain_polled_into_reading_sink(
     """
     written = 0
     async with (
-        open_task(spec) as session,
+        await open_device(spec) as session,
         sink,
         record_polled(session, rate_hz=rate_hz, buffer_size=16) as (rx, _summary),
     ):
@@ -205,7 +205,7 @@ async def test_b3_record_blocks_to_parquet(
 
     seen: list[DaqBlock] = []
     async with (
-        open_task(tc_spec_continuous) as session,
+        await open_device(tc_spec_continuous) as session,
         ParquetSink(parquet_path) as sink,
         record(session, chunk_size=chunk_size) as (rx, summary),
     ):
@@ -251,7 +251,7 @@ async def test_b4_polled_overflow_drop_oldest(
 
     seen = 0
     async with (
-        open_task(tc_spec_on_demand) as session,
+        await open_device(tc_spec_on_demand) as session,
         record_polled(
             session,
             rate_hz=polled_rate_hz,
@@ -296,7 +296,7 @@ async def test_b5_record_with_callback_bridge(
         # autostart=False — the bridge needs to register the buffer event
         # before NI starts the task (NI rejects post-start registration with
         # -200960). record(use_callback_bridge=True) owns the start.
-        open_task(tc_spec_continuous, autostart=False) as session,
+        await open_device(tc_spec_continuous, autostart=False) as session,
         record(
             session,
             chunk_size=chunk_size,
@@ -334,7 +334,7 @@ async def test_b6_csv_sink_refuses_blocks_by_default(
     sink = CsvSink(csv_path, accept_blocks=False)
 
     async with (
-        open_task(tc_spec_continuous) as session,
+        await open_device(tc_spec_continuous) as session,
         sink,
         record(session, chunk_size=chunk_size) as (rx, _summary),
     ):
@@ -361,7 +361,7 @@ async def test_b7_csv_sink_accept_blocks_scalarizes(
 
     blocks: list[DaqBlock] = []
     async with (
-        open_task(tc_spec_continuous) as session,
+        await open_device(tc_spec_continuous) as session,
         CsvSink(csv_path, accept_blocks=True) as sink,
         record(session, chunk_size=chunk_size) as (rx, _summary),
     ):
@@ -407,7 +407,7 @@ async def test_b8_long_run_polled_drift(
     db_path = hw_tmp_dir / "b8.sqlite"
 
     async with (
-        open_task(tc_spec_on_demand) as session,
+        await open_device(tc_spec_on_demand) as session,
         SqliteSink(db_path) as sink,
         record_polled(session, rate_hz=rate_hz, buffer_size=8) as (rx, summary),
     ):
@@ -458,14 +458,14 @@ async def test_b9_bridge_cancel_mid_stream_clean_unwind(
     Concretely: we let the bridge produce a few blocks, then break out of
     the consumer loop. The recorder ``__aexit__`` runs the §11.3.2
     shutdown (stop → unregister → sentinel → drain), and the outer
-    ``open_task`` exits. Both must finish within ``fail_after``.
+    ``open_device`` exits. Both must finish within ``fail_after``.
     """
     chunk_size = max(2, int(tc_config.rate_hz // 2))
 
     received = 0
     with anyio.fail_after(5.0):
         async with (
-            open_task(tc_spec_continuous, autostart=False) as session,
+            await open_device(tc_spec_continuous, autostart=False) as session,
             record(
                 session,
                 chunk_size=chunk_size,
@@ -504,7 +504,7 @@ async def test_b10_bridge_two_channel_blocks(
 
     seen: list[DaqBlock] = []
     async with (
-        open_task(tc_spec_continuous_two_channel, autostart=False) as session,
+        await open_device(tc_spec_continuous_two_channel, autostart=False) as session,
         record(
             session,
             chunk_size=chunk_size,

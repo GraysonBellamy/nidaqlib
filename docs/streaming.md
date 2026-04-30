@@ -15,7 +15,7 @@ samples per channel, wraps them as a `DaqBlock`, and pushes onto an
 `anyio` memory-object stream. The consumer drains at its own pace.
 
 ```python
-async with open_task(spec) as session:
+async with await open_device(spec) as session:
     async with record(session, chunk_size=1000) as (stream, summary):
         async for block in stream:
             ...
@@ -51,7 +51,7 @@ Software-timed scalar polling at an absolute target rate. Direct port
 of alicatlib's recorder loop.
 
 ```python
-async with open_task(spec) as session:
+async with await open_device(spec) as session:
     async with record_polled(session, rate_hz=2.0) as (stream, summary):
         async for reading in stream:
             ...

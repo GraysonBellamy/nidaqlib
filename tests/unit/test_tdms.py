@@ -19,7 +19,7 @@ from nidaqlib import (
     TaskSpec,
     TdmsLogging,
     Timing,
-    open_task,
+    open_device,
     record,
 )
 from nidaqlib.backend import FakeDaqBackend
@@ -57,7 +57,7 @@ async def test_session_configures_logging_in_order() -> None:
         logging=TdmsLogging(path="/tmp/run.tdms"),
     )
     backend = FakeDaqBackend(read_block_default_shape=(1, 100))
-    async with open_task(spec, backend=backend):
+    async with await open_device(spec, backend=backend):
         ops = [op.op for op in backend.operations]
         # add_channel must precede configure_logging which must precede configure_timing.
         assert ops.index("add_channel") < ops.index("configure_logging")
@@ -77,7 +77,7 @@ async def test_record_short_circuits_on_log_only() -> None:
     # get an exception. The short-circuit must keep that path cold.
     backend = FakeDaqBackend()
     async with (
-        open_task(spec, backend=backend) as session,
+        await open_device(spec, backend=backend) as session,
         record(session, chunk_size=100, buffer_size=2) as (rx, summary),
     ):
         blocks = [b async for b in rx]

@@ -144,7 +144,7 @@ def _validate_record_state(
             raise NIDaqTaskStateError(
                 f"record(use_callback_bridge=True) requires an unstarted session; "
                 f"task {source.spec.name!r} is already started. "
-                f"Use open_task(spec, autostart=False) to defer the start.",
+                f"Use open_device(spec, autostart=False) to defer the start.",
                 context=ErrorContext(task_name=source.spec.name, operation="record"),
             )
     elif not source.is_started:
@@ -183,11 +183,11 @@ async def record(
             ``use_callback_bridge``:
 
             * ``use_callback_bridge=False`` (Option A) — ``source`` must be
-              **started**; wrap with :func:`~nidaqlib.tasks.open_task` (the
+              **started**; wrap with :func:`~nidaqlib.tasks.open_device` (the
               default ``autostart=True``).
             * ``use_callback_bridge=True`` (Option B / §11.3.2) — ``source``
               must be **configured but not yet started**; pass
-              ``autostart=False`` to ``open_task`` and let the recorder own
+              ``autostart=False`` to ``open_device`` and let the recorder own
               the start. NI rejects buffer-event registration on a running
               task with -200960 ("Register all your DAQmx software events
               prior to starting the task").
@@ -419,7 +419,7 @@ async def _start_bridge_producer(
     3. Spawn drainer + cleanup tasks.
 
     Shutdown protocol (run in this function's cleanup task; the outer
-    ``open_task`` exit then runs ``session.close`` which is a no-op for
+    ``open_device`` exit then runs ``session.close`` which is a no-op for
     the already-stopped task):
 
     1. Stop the NI task — NI rejects unregister on a running task with
@@ -515,7 +515,7 @@ async def _start_bridge_producer(
                 #   3. sentinel — wakes the drainer from chunk_q.get().
                 #   4. drain_done — wait for the drainer to exit cleanly.
                 # session.close() checks ``_started`` before stop_task, so
-                # the outer open_task exit will not stop again.
+                # the outer open_device exit will not stop again.
                 await source.stop()
                 await run_sync(
                     source._backend.unregister_every_n_samples,  # pyright: ignore[reportPrivateUsage]

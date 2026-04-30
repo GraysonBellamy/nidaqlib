@@ -19,6 +19,7 @@ from anyio.to_thread import run_sync
 from nidaqlib.errors import (
     ErrorContext,
     NIDaqConfigurationError,
+    NIDaqConfirmationRequiredError,
     NIDaqTaskStateError,
     NIDaqValidationError,
 )
@@ -36,7 +37,7 @@ class DaqSession:
     """Owns one underlying NI task plus its lifecycle state.
 
     Construction does not touch the driver. Call :meth:`start` (or use
-    :func:`open_task`) to create the task, add channels, and configure
+    :func:`open_device`) to create the task, add channels, and configure
     timing. ``read_block`` / ``poll`` are valid once started.
     """
 
@@ -512,7 +513,7 @@ class DaqSession:
 
         needs_confirm = any(getattr(ch, "requires_confirm", False) for ch in output_channels)
         if needs_confirm and not confirm:
-            raise NIDaqValidationError(
+            raise NIDaqConfirmationRequiredError(
                 f"task {self._spec.name!r}: write requires confirm=True (one or more "
                 "channels are marked requires_confirm)",
                 context=ErrorContext(task_name=self._spec.name, operation="write"),
@@ -590,7 +591,7 @@ class DaqSession:
             and getattr(ch, "requires_confirm", False)
         ]
         if actuating and not confirm:
-            raise NIDaqValidationError(
+            raise NIDaqConfirmationRequiredError(
                 f"starting task {self._spec.name!r} requires confirm=True; "
                 f"counter-output channels would actuate immediately: {actuating!r}",
                 context=ErrorContext(task_name=self._spec.name, operation="start"),
@@ -668,13 +669,12 @@ class DaqSession:
     # -- Async context manager ----------------------------------------------
 
     async def __aenter__(self) -> DaqSession:
-        """Enter the async context — calls :meth:`configure` then :meth:`start`."""
-        await self.configure()
-        await self.start()
+        """Enter the async context — no-op; :func:`open_device` already configured/started."""
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
         """Exit the async context — calls :meth:`close`."""
+        del exc_info
         await self.close()
 
 

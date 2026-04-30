@@ -102,7 +102,7 @@ async def test_e3_preflight_rejects_overlapping_channel(
 
 
 # ---------------------------------------------------------------------------
-# E4 — invalid spec under ErrorPolicy.RETURN surfaces TaskResult.error
+# E4 — invalid spec under ErrorPolicy.RETURN surfaces DeviceResult.error
 # ---------------------------------------------------------------------------
 
 
@@ -110,12 +110,12 @@ async def test_e4_invalid_spec_returns_taskresult_error(
     tc_config: TcHardwareConfig,
     tc_spec_on_demand: TaskSpec,
 ) -> None:
-    """A bogus device alias surfaces as ``TaskResult.error`` under ``RETURN``.
+    """A bogus device alias surfaces as ``DeviceResult.error`` under ``RETURN``.
 
     Pairs one valid TC task with one task targeting an obviously invalid
     physical channel; the manager-level ``start`` under
     :attr:`ErrorPolicy.RETURN` MUST collect the failure into the
-    per-task :class:`TaskResult` rather than raising.
+    per-task :class:`DeviceResult` rather than raising.
     """
     bogus_spec = TaskSpec(
         name="bogus",

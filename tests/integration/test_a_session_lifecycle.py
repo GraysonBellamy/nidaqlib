@@ -1,10 +1,10 @@
 """Block A — :class:`DaqSession` lifecycle on real TC hardware.
 
-Covers ``open_task``, ``read_block``, ``raw_task``, and the ``acquire``
+Covers ``open_device``, ``read_block``, ``raw_task``, and the ``acquire``
 finite-mode helper with :class:`ThermocoupleInput`, the AI variant accepted by
 TC-only modules.
 
-Each test runs under a fresh ``open_task`` context so a failure in one
+Each test runs under a fresh ``open_device`` context so a failure in one
 test does not leak NI resources into the next.
 """
 
@@ -18,7 +18,7 @@ from nidaqlib import (
     DaqBlock,
     DaqReading,
     TaskSpec,
-    open_task,
+    open_device,
 )
 
 from .conftest import assert_close_float, assert_plausible_temperature
@@ -44,8 +44,8 @@ async def test_a1_poll_returns_reading(
     tc_config: TcHardwareConfig,
     tc_spec_on_demand: TaskSpec,
 ) -> None:
-    """``open_task`` + ``poll()`` returns one :class:`DaqReading` with a TC value."""
-    async with open_task(tc_spec_on_demand) as session:
+    """``open_device`` + ``poll()`` returns one :class:`DaqReading` with a TC value."""
+    async with await open_device(tc_spec_on_demand) as session:
         reading = await session.poll()
 
     assert isinstance(reading, DaqReading)
@@ -74,7 +74,7 @@ async def test_a2_acquire_finite_block(
     samples_per_channel = tc_spec_finite.timing.samples_per_channel  # type: ignore[union-attr]
     assert samples_per_channel is not None  # fixture invariant
 
-    async with open_task(tc_spec_finite) as session:
+    async with await open_device(tc_spec_finite) as session:
         block = await session.acquire(samples_per_channel)
         # ``acquire`` stops the task after the read — confirm.
         assert session.is_started is False
@@ -103,7 +103,7 @@ async def test_a3_continuous_read_block_advances_counters(
     chunk = max(2, int(tc_config.rate_hz // 2))  # ~0.5 s per block
     n_blocks = 5
 
-    async with open_task(tc_spec_continuous) as session:
+    async with await open_device(tc_spec_continuous) as session:
         blocks: list[DaqBlock] = [await session.read_block(chunk) for _ in range(n_blocks)]
 
     # block_index monotonic from 0
@@ -130,7 +130,7 @@ async def test_a4_raw_task_escape_hatch(tc_spec_continuous: TaskSpec) -> None:
     """
     import nidaqmx
 
-    async with open_task(tc_spec_continuous) as session:
+    async with await open_device(tc_spec_continuous) as session:
         # Touch raw_task before the first read — verifies the property is
         # populated as soon as ``start`` returns, not lazily on first read.
         raw = session.raw_task
@@ -156,7 +156,7 @@ async def test_a5_two_channel_poll(
     """
     chunk = max(2, int(tc_config.rate_hz // 2))
 
-    async with open_task(tc_spec_continuous_two_channel) as session:
+    async with await open_device(tc_spec_continuous_two_channel) as session:
         block = await session.read_block(chunk)
 
     assert block.channels == ("primary", "secondary")
@@ -182,7 +182,7 @@ async def test_a6_poll_rejected_for_continuous_task(
     """
     from nidaqlib import NIDaqTaskStateError
 
-    async with open_task(tc_spec_continuous) as session:
+    async with await open_device(tc_spec_continuous) as session:
         with pytest.raises(NIDaqTaskStateError):
             await session.poll()
 
@@ -207,7 +207,7 @@ async def test_a7_stop_then_restart_same_session(
       assume the second start is not silently reusing the first anchor).
     """
     chunk = 4
-    async with open_task(tc_spec_continuous) as session:
+    async with await open_device(tc_spec_continuous) as session:
         first = await session.read_block(chunk)
         first_anchor = session.task_started_at
         assert first_anchor is not None
@@ -251,7 +251,7 @@ async def test_a8_invalid_sample_rate_rejected(
         timing=Timing(rate_hz=100_000.0, mode=AcquisitionMode.CONTINUOUS),
     )
     with pytest.raises(NIDaqError) as exc_info:
-        async with open_task(spec):
+        async with await open_device(spec):
             pass
     # The NI error code must be present on the wrapper context — that's
     # what an operator inspecting the failure will see in their logs.

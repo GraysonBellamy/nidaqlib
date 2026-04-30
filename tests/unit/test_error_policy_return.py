@@ -18,7 +18,7 @@ from nidaqlib import (
     NIDaqReadError,
     TaskSpec,
     Timing,
-    open_task,
+    open_device,
     record,
 )
 from nidaqlib.backend import FakeDaqBackend
@@ -41,7 +41,7 @@ async def test_return_emits_error_block_and_continues() -> None:
         read_errors={"ai_err": [err]},
     )
     async with (
-        open_task(_make_spec(), backend=backend) as session,
+        await open_device(_make_spec(), backend=backend) as session,
         record(
             session,
             chunk_size=50,
@@ -77,7 +77,7 @@ async def test_raise_default_propagates() -> None:
         read_errors={"ai_err": [NIDaqReadError("bad read")]},
     )
     with pytest.raises(BaseExceptionGroup) as ei:  # noqa: PT012
-        async with open_task(_make_spec(), backend=backend) as session:
+        async with await open_device(_make_spec(), backend=backend) as session:
             async with record(
                 session,
                 chunk_size=50,

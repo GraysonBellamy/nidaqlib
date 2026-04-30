@@ -2,7 +2,7 @@
 
 Round-trip every concrete counter spec through ``to_dict`` /
 ``from_dict`` (the registry path on :class:`ChannelSpec`), and confirm
-the fake backend records each one through ``open_task``. The real
+the fake backend records each one through ``open_device``. The real
 ``NidaqmxBackend`` dispatch table is exercised by the hardware-gated
 integration tests; the unit tests verify the registry plumbing.
 """
@@ -20,9 +20,10 @@ from nidaqlib import (
     CounterPulseTicks,
     CounterPulseTime,
     Edge,
+    NIDaqConfirmationRequiredError,
     NIDaqValidationError,
     TaskSpec,
-    open_task,
+    open_device,
 )
 from nidaqlib.backend import FakeDaqBackend
 
@@ -116,7 +117,7 @@ async def test_counter_input_addable_via_fake_backend() -> None:
             CounterFrequencyInput(physical_channel="Dev1/ctr0", min_val=1.0, max_val=1000.0),
         ],
     )
-    async with open_task(spec, backend=backend):
+    async with await open_device(spec, backend=backend):
         ops = [op.op for op in backend.operations]
     assert ops.count("add_channel") == 1
 
@@ -128,9 +129,9 @@ async def test_counter_output_start_requires_confirm() -> None:
         channels=[CounterPulseFrequency(physical_channel="Dev1/ctr0", frequency=1000.0)],
     )
     backend = FakeDaqBackend()
-    with pytest.raises(NIDaqValidationError, match="confirm=True"):
-        async with open_task(spec, backend=backend):
+    with pytest.raises(NIDaqConfirmationRequiredError, match="confirm=True"):
+        async with await open_device(spec, backend=backend):
             pass
 
-    async with open_task(spec, backend=backend, confirm_start=True):
+    async with await open_device(spec, backend=backend, confirm_start=True):
         pass

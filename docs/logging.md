@@ -67,7 +67,7 @@ additionally locks the *record shape* — once you've written
 
 ```python
 async with (
-    open_task(spec) as session,
+    await open_device(spec) as session,
     ParquetSink("run.parquet") as fast,
     SqliteSink("run.sqlite") as slow,
     record(session, chunk_size=1000) as (block_stream, _bs),

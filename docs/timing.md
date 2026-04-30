@@ -113,7 +113,7 @@ async with DaqManager() as mgr:
 
 If a slave fails to arm, every previously-armed slave is stopped before
 the error is raised, and the master is **not** started. Under
-`ErrorPolicy.RETURN`, the master's `TaskResult.error` carries a
+`ErrorPolicy.RETURN`, the master's `DeviceResult.error` carries a
 `NIDaqTaskStateError` explaining why.
 
 `start_synchronized` is intentionally simpler than `start()` — sequential

@@ -33,7 +33,7 @@ from nidaqlib import (
     TaskSpec,
     ThermocoupleInput,
     Timing,
-    open_task,
+    open_device,
 )
 
 _TC_TYPES = ("J", "K", "T", "E", "N", "R", "S", "B")
@@ -131,7 +131,7 @@ async def _capture_parquet(
     from nidaqlib.streaming import record  # noqa: PLC0415
 
     async with (
-        open_task(spec) as session,
+        await open_device(spec) as session,
         record(session, chunk_size=chunk_size) as (rx, _summary),
         ParquetSink(out) as sink,
     ):
@@ -167,7 +167,7 @@ async def _capture_tdms(
     # into the TDMS file via the driver. Sleep for the configured duration to
     # keep the task running.
     async with (
-        open_task(spec) as session,
+        await open_device(spec) as session,
         record(session, chunk_size=1) as (_rx, _summary),
     ):
         # `session` is used to construct the recorder context; once we're

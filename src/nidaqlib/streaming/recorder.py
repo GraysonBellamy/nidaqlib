@@ -20,7 +20,7 @@ Key invariants (design §13.2):
 
 When ``source`` is a manager, ``record_polled`` fans out across all managed
 tasks at the same ``rate_hz`` and emits
-``Mapping[str, TaskResult[DaqReading]]`` per tick — matching
+``Mapping[str, DeviceResult[DaqReading]]`` per tick — matching
 :meth:`DaqManager.poll`'s shape so a single ``error_policy`` decision is
 consistent across the per-tick / one-shot paths.
 """
@@ -52,7 +52,7 @@ if TYPE_CHECKING:
 
     from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
-    from nidaqlib.manager import DaqManager, TaskResult
+    from nidaqlib.manager import DaqManager, DeviceResult
     from nidaqlib.tasks.session import DaqSession
 
 __all__ = ["record_polled"]
@@ -61,7 +61,7 @@ __all__ = ["record_polled"]
 # Per-tick payload type. Session mode emits :class:`DaqReading`; manager
 # mode emits a per-task mapping so consumers can correlate readings across
 # tasks at the same tick.
-_PolledItem = Union["DaqReading", "Mapping[str, TaskResult[DaqReading]]"]
+_PolledItem = Union["DaqReading", "Mapping[str, DeviceResult[DaqReading]]"]
 
 
 @asynccontextmanager
@@ -79,7 +79,7 @@ async def record_polled(
     ``source``:
 
     - :class:`DaqSession` → one :class:`DaqReading` per tick.
-    - :class:`DaqManager` → ``Mapping[str, TaskResult[DaqReading]]`` per
+    - :class:`DaqManager` → ``Mapping[str, DeviceResult[DaqReading]]`` per
       tick (matches :meth:`DaqManager.poll`).
 
     ``summary`` is updated in place during the run; a final snapshot is
@@ -91,7 +91,7 @@ async def record_polled(
         rate_hz: Target poll rate, in Hz. Must be > 0.
         error_policy: :attr:`RAISE` cancels the recorder on a poll error;
             :attr:`RETURN` emits a :class:`DaqReading` (or per-task
-            :class:`TaskResult` row) with the error attached and continues.
+            :class:`DeviceResult` row) with the error attached and continues.
         overflow: Backpressure policy. Defaults to :attr:`BLOCK` —
             software-timed pollers can pause safely (design §13.3).
         buffer_size: AnyIO send-stream capacity in payload slots.
@@ -222,9 +222,9 @@ async def _polled_manager_producer(
     """Drive the absolute-target poll loop for a manager source.
 
     Each tick fans out a :meth:`DaqManager.poll` and emits the resulting
-    ``Mapping[str, TaskResult[DaqReading]]``. ``error_policy`` is forwarded
+    ``Mapping[str, DeviceResult[DaqReading]]``. ``error_policy`` is forwarded
     to the manager call — under :attr:`RETURN` per-task errors land in
-    individual :class:`TaskResult` rows; under :attr:`RAISE` they re-raise
+    individual :class:`DeviceResult` rows; under :attr:`RAISE` they re-raise
     as an :class:`ExceptionGroup`.
     """
     start = anyio.current_time()

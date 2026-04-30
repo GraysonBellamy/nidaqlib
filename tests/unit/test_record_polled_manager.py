@@ -10,8 +10,8 @@ from nidaqlib import (
     AcquisitionMode,
     AnalogInputVoltage,
     DaqManager,
+    DeviceResult,
     NIDaqTaskStateError,
-    TaskResult,
     TaskSpec,
     Timing,
     record_polled,
@@ -38,9 +38,9 @@ async def test_manager_fanout_emits_per_task_mappings() -> None:
         await mgr.add("b", _spec("b", "Dev1/ai1"), backend=backend)
         await mgr.start()
         async with record_polled(mgr, rate_hz=50.0, buffer_size=8) as (rx, _summary):
-            seen: list[dict[str, TaskResult[DaqReading]]] = []
+            seen: list[dict[str, DeviceResult[DaqReading]]] = []
             async for payload in rx:
-                # Manager mode payload is a Mapping[str, TaskResult[DaqReading]].
+                # Manager mode payload is a Mapping[str, DeviceResult[DaqReading]].
                 assert isinstance(payload, dict)
                 seen.append(payload)
                 if len(seen) >= 3:

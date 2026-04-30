@@ -39,7 +39,7 @@ Only after all three checks pass does the call dispatch to the backend.
 
 Counter-output pulse trains (`CounterPulseFrequency`, `CounterPulseTime`,
 `CounterPulseTicks`) actuate on task start, not through `write()`. For
-those tasks, pass `confirm_start=True` to `open_task(...)` or call
+those tasks, pass `confirm_start=True` to `open_device(...)` or call
 `session.start(confirm=True)` when restarting an already-open session.
 
 ## Defaults are conservative
@@ -66,7 +66,7 @@ DigitalOutput(
 ## Safe-range example
 
 ```python
-from nidaqlib import AnalogOutputVoltage, TaskSpec, open_task
+from nidaqlib import AnalogOutputVoltage, TaskSpec, open_device
 
 spec = TaskSpec(
     name="heater",
@@ -83,7 +83,7 @@ spec = TaskSpec(
     ],
 )
 
-async with open_task(spec) as session:
+async with await open_device(spec) as session:
     await session.write({"heater_command": 4.5}, confirm=True)
     # await session.write({"heater_command": 7.0}, confirm=True)
     # ↑ raises NIDaqValidationError — outside [0.0, 5.0]
@@ -108,7 +108,7 @@ sprinkled across the call graph. That makes the operator-intent
 audit-trail visible:
 
 ```python
-async with open_task(spec) as session:
+async with await open_device(spec) as session:
     if not args.dry_run:
         await session.write({"heater_command": 4.5}, confirm=True)
     else:

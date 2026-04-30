@@ -1,8 +1,7 @@
-"""Tasks — specs, acquisition records, sessions, and :func:`open_task`."""
+"""Tasks — specs, acquisition records, sessions, and :func:`open_device`."""
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from nidaqlib.tasks.builder import TaskBuilder
@@ -11,26 +10,34 @@ from nidaqlib.tasks.session import DaqSession
 from nidaqlib.tasks.spec import AcquisitionMode, Edge, TaskSpec, Timing
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
     from nidaqlib.backend.base import DaqBackend
 
 
-@asynccontextmanager
-async def open_task(
+async def open_device(
     spec: TaskSpec,
     *,
     backend: DaqBackend | None = None,
     timeout: float = 10.0,  # noqa: ASYNC109 — NI per-call timeout, not coroutine
     autostart: bool = True,
     confirm_start: bool = False,
-) -> AsyncGenerator[DaqSession]:
-    """Open a :class:`DaqSession` for ``spec`` and (optionally) start it.
+) -> DaqSession:
+    """Open and return a configured :class:`DaqSession`.
 
-    The session is closed on exit (whether the body succeeds or raises).
-    Mirrors the ecosystem ``open_device`` shape used by ``alicatlib`` and
-    ``sartoriuslib``, but the object being opened is a DAQ task, not a
-    serial device.
+    Usage forms::
+
+        async with await open_device(spec) as session:
+            ...
+
+        session = await open_device(spec)
+        try:
+            ...
+        finally:
+            await session.close()
+
+    Mirrors the ecosystem ``open_device`` shape used by ``alicatlib``,
+    ``watlowlib``, and ``sartoriuslib``. The DAQ-specific deviation: the
+    ``spec`` is the declarative task description (channels, timing,
+    triggers) rather than a serial port string.
 
     Args:
         spec: Declarative :class:`TaskSpec` to materialise.
@@ -40,18 +47,19 @@ async def open_task(
             :class:`~nidaqlib.backend.fake.FakeDaqBackend` here.
         timeout: Default per-operation timeout, in seconds.
         autostart: When ``True`` (default), the session is configured AND
-            started before the body runs. When ``False``, the session is
-            only configured — the caller is responsible for ``await
-            session.start()`` before any acquisition. Required for the
-            §11.3.2 callback bridge, which must register the buffer event
-            before NI's ``task.start()``; pass the unstarted session to
-            :func:`~nidaqlib.streaming.block.record` with
-            ``use_callback_bridge=True`` and the recorder owns the start.
+            started before this function returns. When ``False``, the
+            session is only configured — the caller is responsible for
+            ``await session.start()`` before any acquisition. Required
+            for the §11.3.2 callback bridge, which must register the
+            buffer event before NI's ``task.start()``; pass the
+            unstarted session to :func:`~nidaqlib.streaming.block.record`
+            with ``use_callback_bridge=True`` and the recorder owns the
+            start.
         confirm_start: Required when starting the task can actuate hardware
             immediately (for example counter-output pulse trains). Only
             consulted when ``autostart=True``.
 
-    Yields:
+    Returns:
         A configured :class:`DaqSession`. Started iff ``autostart=True``.
     """
     if backend is None:
@@ -69,9 +77,12 @@ async def open_task(
         await session.configure()
         if autostart:
             await session.start(confirm=confirm_start)
-        yield session
-    finally:
+    except BaseException:
+        # Open failed mid-pipeline; release any partial state so the
+        # caller isn't left with a half-configured session.
         await session.close()
+        raise
+    return session
 
 
 __all__ = [
@@ -83,5 +94,5 @@ __all__ = [
     "TaskBuilder",
     "TaskSpec",
     "Timing",
-    "open_task",
+    "open_device",
 ]

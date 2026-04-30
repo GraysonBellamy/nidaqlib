@@ -16,10 +16,10 @@ def _make_spec() -> TaskSpec:
     )
 
 
-def test_sync_open_task_read_block() -> None:
-    """:meth:`Daq.open_task` yields a sync session with a working ``read_block``."""
+def test_sync_open_device_read_block() -> None:
+    """:meth:`Daq.open_device` yields a sync session with a working ``read_block``."""
     backend = FakeDaqBackend(read_block_default_shape=(1, 100))
-    with Daq.open_task(_make_spec(), backend=backend) as session:
+    with Daq.open_device(_make_spec(), backend=backend) as session:
         block = session.read_block(samples_per_channel=100)
         assert block.samples_per_channel == 100
 
@@ -28,7 +28,7 @@ def test_sync_record_iterates_blocks() -> None:
     """Sync :func:`record` yields a sync iterator the user can ``for``-loop over."""
     backend = FakeDaqBackend(read_block_default_shape=(1, 50))
     with (
-        Daq.open_task(_make_spec(), backend=backend) as session,
+        Daq.open_device(_make_spec(), backend=backend) as session,
         sync_record(session, chunk_size=50, buffer_size=4) as (stream, _summary),
     ):
         seen: list[DaqBlock] = []
