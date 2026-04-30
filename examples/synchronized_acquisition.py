@@ -1,10 +1,11 @@
 """Two AI tasks sharing a master start-trigger via DaqManager.
 
-Run this end-to-end against real hardware (set ``NIDAQLIB_TEST_AI_CHANNEL``
-to your AI channel — e.g. ``Dev1/ai0`` — and a second device for the
-slave). It exercises :meth:`DaqManager.start_synchronized`: the slave arms
-first against the master's ``StartTrigger``, then the master fires and both
-tasks acquire from the same start edge.
+Run this end-to-end against real hardware (set
+``NIDAQLIB_SYNC_MASTER_CHANNEL`` to your master AI channel — e.g.
+``Dev1/ai0`` — and ``NIDAQLIB_SYNC_SLAVE_CHANNEL`` to a second device).
+It exercises :meth:`DaqManager.start_synchronized`: the slave arms first
+against the master's ``StartTrigger``, then the master fires and both tasks
+acquire from the same start edge.
 """
 
 from __future__ import annotations
@@ -25,8 +26,8 @@ from nidaqlib import (
 
 
 async def main() -> None:
-    master_channel = os.environ.get("NIDAQLIB_TEST_AI_CHANNEL", "Dev1/ai0")
-    slave_channel = os.environ.get("NIDAQLIB_TEST_AI_CHANNEL_SLAVE", "Dev2/ai0")
+    master_channel = os.environ.get("NIDAQLIB_SYNC_MASTER_CHANNEL", "Dev1/ai0")
+    slave_channel = os.environ.get("NIDAQLIB_SYNC_SLAVE_CHANNEL", "Dev2/ai0")
     rate_hz = 10_000.0
 
     master = TaskSpec(

@@ -10,7 +10,7 @@ Use `nidaqlib` when you want:
 - consistent async/sync APIs,
 - structured errors,
 - block-oriented acquisition,
-- TDMS / Parquet / SQLite logging,
+- TDMS / Parquet / SQLite / Postgres / CSV / JSONL logging,
 - hardware-free tests,
 - and unified experiment workflows across DAQ, flow controllers, and balances.
 

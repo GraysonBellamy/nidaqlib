@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `confirm=True` whenever any target channel sets `requires_confirm`,
     and rejects (never silently clamps) AO values outside the resolved
     `safe_min` / `safe_max` window.
-  - `DaqManager` and `TaskResult` (design doc §15) — multi-task
+  - `DaqManager` and `DeviceResult` (design doc §15) — multi-task
     lifecycle with per-task locks, LIFO unwind, idempotent ref-counted
     `add` / `remove`, and `ExceptionGroup` semantics on group failures.
     Honours `ErrorPolicy.RAISE` / `ErrorPolicy.RETURN` for `start`,
@@ -51,7 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `NIDaqResourceError` on obvious physical-channel overlap (best
     effort; NI is final authority).
   - `record_polled` accepts `DaqSession | DaqManager`; manager mode
-    emits `Mapping[str, TaskResult[DaqReading]]` per tick.
+    emits `Mapping[str, DeviceResult[DaqReading]]` per tick.
+  - `PostgresSink` / `PostgresConfig` behind the `postgres` extra for
+    row-oriented readings/samples plus block summary rows.
   - CLIs: `nidaq-read` (one-shot or streamed scalar), `nidaq-info`
     (driver / device / library report).
   - `docs/safety.md` rewritten with the tiered safety model, gate

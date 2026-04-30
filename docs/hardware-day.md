@@ -266,7 +266,7 @@ is a tripwire that the voltage-mode rejection still happens.
 | E1 | `test_e1_manager_single_task_read_block` | `DaqManager` with one two-channel TC task end-to-end. `read_block` fan-out emits one `DeviceResult[DaqBlock]`. |
 | E2 | `test_e2_refcount_holds_session_alive` | Duplicate `add` bumps refcount; one `remove` does not tear down; the second `remove` does. |
 | E3 | `test_e3_preflight_rejects_overlapping_channel` | Adding a second task that targets the same physical channel raises `NIDaqResourceError` (§15.3 best-effort preflight). |
-| E4 | `test_e4_invalid_spec_returns_taskresult_error` | Under `ErrorPolicy.RETURN`, a bogus device alias surfaces as `DeviceResult.error` rather than raising; valid tasks remain operable. |
+| E4 | `test_e4_invalid_spec_returns_deviceresult_error` | Under `ErrorPolicy.RETURN`, a bogus device alias surfaces as `DeviceResult.error` rather than raising; valid tasks remain operable. |
 | E5 | `test_e5_module_reservation_preflight_on_tc_module` | Adding two tasks targeting the same TC module fails at `add()` time with `NIDaqResourceError` referencing module-level reservation. The manager queries `backend.device_info(...)` on first add, caches the product type, and rejects subsequent adds against any whole-module-reserved device (NI 9211/9212/9213/9214). Skips on hardware not in the known reservation set. |
 
 ```bash

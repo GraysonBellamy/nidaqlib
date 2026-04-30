@@ -40,9 +40,9 @@ async def main() -> None:
 anyio.run(main)
 ```
 
-`session.acquire` is the one-shot finite path: configure → start → read →
-stop, returning one `DaqBlock`. For continuous acquisition use `record`
-(below).
+`open_device` configures and starts the finite task. `session.acquire`
+reads one `DaqBlock` and stops the task afterward. For continuous
+acquisition use `record` (below).
 
 ## Continuous acquisition with `record`
 

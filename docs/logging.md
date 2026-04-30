@@ -11,6 +11,7 @@ into sinks. (Design doc §14.1.)
 | `JsonlSink`    | ✓ | ✓ | ✗ | Same. |
 | `SqliteSink`   | ✓ | ✓ | summary only | One row per block (no scalarisation). Different shapes go to different tables. |
 | `ParquetSink`  | ✓ | ✓ | ✓ | Preferred for blocks. Row groups per block. zstd by default. |
+| `PostgresSink` | ✓ | ✓ | summary only | Optional `postgres` extra. COPY by default, `executemany` fallback. |
 
 ## When each sink fits
 
@@ -22,6 +23,11 @@ into sinks. (Design doc §14.1.)
   `record_polled` and the same SQLite file Alicat / Sartorius rows go
   to. Block summary rows (one row per block, no per-sample fan-out)
   let you correlate runs without ballooning the table.
+- **`PostgresSink` for shared experiment databases.** It writes
+  `DaqReading` / `DaqSample` rows and one summary row per `DaqBlock`.
+  Install `nidaqlib[postgres]`; use `PostgresConfig(create_tables=True)`
+  for first-run table creation or pre-create tables and let the sink
+  lock schemas from `information_schema`.
 - **`CsvSink` / `JsonlSink` for one-off scalar exports.** Both refuse
   blocks by default — set `accept_blocks=True` only when you really
   want one row per (channel, sample) and have measured the file size.
@@ -56,12 +62,12 @@ automatically.
 
 ## Schema lock
 
-Tabular sinks (`CsvSink`, `SqliteSink`, `ParquetSink`) lock their column
-set on the first write. Later batches that introduce new columns get a
-one-shot `WARN` log and the new columns are dropped. `ParquetSink`
-additionally locks the *record shape* — once you've written
-`DaqBlock`s, you can't `write_many` `DaqReading`s to the same file
-(use a separate sink instance, or a separate file).
+Tabular sinks (`CsvSink`, `SqliteSink`, `ParquetSink`, `PostgresSink`)
+lock their column set on the first write. Later batches that introduce
+new columns get a one-shot `WARN` log and the new columns are dropped.
+`ParquetSink` additionally locks the *record shape* — once you've
+written `DaqBlock`s, you can't `write_many` `DaqReading`s to the same
+file (use a separate sink instance, or a separate file).
 
 ## Worked example: Parquet for blocks, SQLite for slow scalars
 

@@ -14,10 +14,10 @@ nidaqlib/
 ├── channels/          # ChannelSpec + concrete subclasses (AI/AO/...)
 ├── backend/           # DaqBackend Protocol; NidaqmxBackend; FakeDaqBackend
 ├── streaming/         # record (block) + record_polled (scalar)
-├── sinks/             # 3 Protocols + 2 pipe drivers + 5 concrete sinks
+├── sinks/             # 3 Protocols + 2 pipe drivers + 6 concrete sinks
 ├── sync/              # SyncPortal-based sync facade
 ├── system/            # list_devices(), DeviceInfo
-├── cli/               # nidaq-list, nidaq-capture
+├── cli/               # nidaq-list, nidaq-capture, nidaq-read, nidaq-info
 ├── errors.py          # NIDaqError hierarchy
 └── config.py          # NidaqConfig + config_from_env
 ```

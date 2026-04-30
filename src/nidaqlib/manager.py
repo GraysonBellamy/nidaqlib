@@ -4,7 +4,7 @@ Direct-port of sartoriuslib's ``manager.py``, shape-translated for DAQ:
 
 - Port-keyed locks → per-task locks plus a per-device lock for tasks that
   share a card (best-effort; NI is the final authority).
-- Sibling ``DeviceResult[T]`` → :class:`DeviceResult[T]`.
+- Per-operation outcomes are reported as :class:`DeviceResult[T]`.
 - The recorder consumed :class:`ErrorPolicy` in v0.1; the manager becomes
   the second consumer here.
 
@@ -54,9 +54,8 @@ __all__ = ["DaqManager", "DeviceResult"]
 class DeviceResult[T]:
     """One per-task outcome from a manager group operation.
 
-    Mirrors sibling ``DeviceResult[T]`` but is named for the task-level
-    granularity of the DAQ manager (one NI task per slot, not one device
-    per slot).
+    The name matches the ecosystem manager surface even though DAQ
+    granularity is one NI task per slot.
 
     Attributes:
         name: Manager-add name of the task.
@@ -441,7 +440,7 @@ class DaqManager:
         Args:
             master: Manager-add name of the master task.
             slaves: Manager-add names of the slave tasks. Order is
-            respected — slaves are armed left-to-right.
+                respected — slaves are armed left-to-right.
             error_policy: Optional override; defaults to the manager's
                 policy.
             confirm: Required when any task being started can actuate

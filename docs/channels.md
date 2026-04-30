@@ -7,7 +7,19 @@ free-form metadata). The core input channel kinds are:
 - `AnalogInputVoltage` — `task.ai_channels.add_ai_voltage_chan`.
 - `ThermocoupleInput` — `task.ai_channels.add_ai_thrmcpl_chan`.
 
-Output, digital, and counter channel specs are also available.
+Output, digital, and counter channel specs are also available:
+
+| Spec | NI call | Notes |
+|---|---|---|
+| `AnalogOutputVoltage` | `task.ao_channels.add_ao_voltage_chan` | Write through `DaqSession.write`; `requires_confirm=True` by default and optional `safe_min` / `safe_max` are validated before I/O. |
+| `DigitalInput` | `task.di_channels.add_di_chan` | Read-only line or port. `line_grouping_per_line=True` by default. |
+| `DigitalOutput` | `task.do_channels.add_do_chan` | Write through `DaqSession.write`; `requires_confirm=True` by default. |
+| `CounterFrequencyInput` | `task.ci_channels.add_ci_freq_chan` | Frequency measurement in Hz. |
+| `CounterPeriodInput` | `task.ci_channels.add_ci_period_chan` | Period measurement in seconds. |
+| `CounterEdgeCountInput` | `task.ci_channels.add_ci_count_edges_chan` | Edge counting / totalising. |
+| `CounterPulseFrequency` | `task.co_channels.add_co_pulse_chan_freq` | Pulse train by frequency and duty cycle; actuates on start. |
+| `CounterPulseTime` | `task.co_channels.add_co_pulse_chan_time` | Pulse train by high/low seconds; actuates on start. |
+| `CounterPulseTicks` | `task.co_channels.add_co_pulse_chan_ticks` | Pulse train by source-clock ticks; actuates on start. |
 
 ## `AnalogInputVoltage`
 
@@ -72,6 +84,35 @@ are NI's constants and `nidaqlib` does not re-shape them.
 If you are conditioning the TC externally (e.g. with a 4-20 mA
 transmitter that already converts to engineering units), use
 `AnalogInputVoltage` and apply your own scale.
+
+## Outputs and confirmation
+
+Output-capable specs default to `requires_confirm=True` because they can
+drive real hardware. Analog outputs also validate a safe range:
+
+```python
+from nidaqlib import AnalogOutputVoltage, TaskSpec, open_device
+
+spec = TaskSpec(
+    name="heater_command",
+    channels=[
+        AnalogOutputVoltage(
+            physical_channel="Dev1/ao0",
+            name="heater_v",
+            min_val=0.0,
+            max_val=10.0,
+            safe_max=5.0,
+        ),
+    ],
+)
+
+async with await open_device(spec) as session:
+    await session.write({"heater_v": 3.5}, confirm=True)
+```
+
+Counter-output pulse trains actuate when the task starts, so pass
+`confirm_start=True` to `open_device(...)` or call
+`session.start(confirm=True)` when starting manually.
 
 ## Round-trip serialisation
 

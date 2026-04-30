@@ -14,7 +14,7 @@ Use `nidaqlib` when you want:
 - consistent async/sync APIs,
 - structured errors,
 - block-oriented acquisition,
-- TDMS / Parquet / SQLite logging,
+- TDMS / Parquet / SQLite / Postgres / CSV / JSONL logging,
 - hardware-free tests,
 - and unified experiment workflows across DAQ, flow controllers, and balances.
 
@@ -40,7 +40,7 @@ real-hardware operation. Tests do not — `FakeDaqBackend` covers the test surfa
 ```python
 import anyio
 
-from nidaqlib import AnalogInputVoltage, TaskSpec, open_task
+from nidaqlib import AnalogInputVoltage, TaskSpec, open_device
 
 
 spec = TaskSpec(
@@ -63,8 +63,8 @@ spec = TaskSpec(
 
 
 async def main() -> None:
-    async with open_task(spec) as task:
-        reading = await task.poll()
+    async with await open_device(spec) as session:
+        reading = await session.poll()
         print(reading.values)
 
 

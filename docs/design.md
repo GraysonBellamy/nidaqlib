@@ -44,8 +44,8 @@ DAQ hardware is a natural next member of this ecosystem. A typical experimental 
 Without a wrapper, users must combine very different programming models:
 
 ```python
-# Alicat / Sartorius ecosystem style
-async with open_device(...) as dev:
+# nidaqlib ecosystem style
+async with await open_device(...) as dev:
     frame = await dev.poll()
 
 # Raw NI-DAQmx style
@@ -633,20 +633,34 @@ class DaqSession:
 - **`poll()` is invalid mid-buffered-acquisition.** It raises `NIDaqTaskStateError` if the task is configured `CONTINUOUS` or `FINITE` with a sample clock and is in the started state. This avoids competing consumers on the same NI buffer.
 - **Callback-bridge shutdown is ordered** (see §11.3.2). For sessions using the every-N-samples callback bridge, `close()` MUST: (1) unregister the NI callback, (2) post a sentinel to the chunk queue, (3) await drain exit, (4) stop the task, (5) close the task, (6) close the BlockingPortal — in that order. Reordering invites a stopped-task callback (driver crash) or a deadlock in the drain coroutine.
 
-### 9.3 Context manager
+### 9.3 Open factory
 
 ```python
-@asynccontextmanager
 async def open_device(
     spec: TaskSpec,
     *,
     backend: DaqBackend | None = None,
     timeout: float = 10.0,
-) -> AsyncIterator[DaqSession]:
+    autostart: bool = True,
+    confirm_start: bool = False,
+) -> DaqSession:
     ...
 ```
 
-This mirrors the ecosystem style of `open_device(...)`, but the object being opened is a DAQ task, not a physical serial device.
+This mirrors the ecosystem style of `open_device(...)`, but the object
+being opened is a DAQ task, not a physical serial device. The factory is
+a plain async function: callers `await` it to receive a configured
+`DaqSession`, and the session itself is the async context manager:
+
+```python
+async with await open_device(spec) as session:
+    ...
+```
+
+`autostart=False` returns a configured-but-not-started session for
+recorder paths that need to register callbacks before `task.start()`.
+`confirm_start=True` is required for task starts that actuate hardware,
+such as counter-output pulse trains.
 
 ---
 
@@ -1168,7 +1182,7 @@ Concrete sinks declare which Protocol(s) they implement:
 | `JsonlSink`    | ✓       | ✓      | ✗ (same)                                    |
 | `SqliteSink`   | ✓       | ✓      | summary rows only (one row per block, no scalarization) |
 | `ParquetSink`  | ✓       | ✓      | ✓ (preferred; row groups per block)         |
-| `PostgresSink` | ✓       | ✓      | ✗                                           |
+| `PostgresSink` | ✓       | ✓      | summary rows only (one row per block, no scalarization) |
 
 The "refuse blocks by default" rule on row-oriented sinks prevents accidental 1-GB CSVs at 10 kHz × 8 channels.
 
@@ -1227,7 +1241,9 @@ task.in_stream.configure_logging(
 )
 ```
 
-`LoggingMode` and `LoggingOperation` live in `nidaqmx.constants` and should be re-exported from `nidaqlib` so callers don't reach into `nidaqmx` directly. The wrapper config:
+`LoggingMode` and `LoggingOperation` live in `nidaqmx.constants`. Callers
+import them from NI directly; `nidaqlib` stores them on `TdmsLogging`
+without wrapping them in parallel enums. The wrapper config:
 
 ```python
 from nidaqmx.constants import LoggingMode, LoggingOperation
@@ -1690,6 +1706,7 @@ Environment gates:
 
 ```text
 NIDAQLIB_ENABLE_HARDWARE_TESTS=1
+NIDAQLIB_ENABLE_STATEFUL_TESTS=1
 NIDAQLIB_ENABLE_OUTPUT_TESTS=1
 NIDAQLIB_ENABLE_DESTRUCTIVE_TESTS=1
 ```
@@ -1697,10 +1714,13 @@ NIDAQLIB_ENABLE_DESTRUCTIVE_TESTS=1
 Hardware test configuration:
 
 ```text
-NIDAQLIB_TEST_AI_CHANNEL=Dev1/ai0
-NIDAQLIB_TEST_AO_CHANNEL=Dev1/ao0
-NIDAQLIB_TEST_DI_LINE=Dev1/port0/line0
-NIDAQLIB_TEST_DO_LINE=Dev1/port0/line1
+NIDAQLIB_TEST_TC_DEVICE=cDAQ1Mod1
+NIDAQLIB_TEST_TC_CHANNEL_PRIMARY=cDAQ1Mod1/ai0
+NIDAQLIB_TEST_TC_CHANNEL_SECONDARY=cDAQ1Mod1/ai1  # optional
+NIDAQLIB_TEST_TC_TYPE=K                           # default K
+NIDAQLIB_TEST_TC_RATE_HZ=10                       # default 10
+NIDAQLIB_TEST_TC_MIN_DEGC=-50                     # default -50
+NIDAQLIB_TEST_TC_MAX_DEGC=200                     # default 200
 ```
 
 ---
@@ -2161,14 +2181,14 @@ For readers already steeped in the existing two libraries, this is the file-by-f
 | `transport/` | **Replaced by `backend/`.** `DaqBackend` Protocol with `create_task` / `add_channel` / `configure_timing` / `start` / `stop` / `read_block` / `write` / `close`. `NidaqmxBackend` is real, `FakeDaqBackend` is for tests. | The *role* is preserved (swappable I/O seam, fake for tests). The *shape* changes — there are no bytes to move. |
 | `protocol/` | **Skip entirely.** | `nidaqmx-python` is the protocol layer. Re-implementing it is pure ceremony. |
 | `commands/` | **Skip entirely.** | `task.ai_channels.add_ai_voltage_chan(...)` is already typed and discoverable. A `Command` catalog over it adds no value. **Resist this temptation hardest** — symmetry-for-its-own-sake here is what kills the package. |
-| `registry/` | **Mostly skip.** | Re-export the `nidaqmx.constants` enums the public API uses (`AcquisitionType`, `TerminalConfiguration`, `VoltageUnits`, `ThermocoupleType`, `LoggingMode`, `LoggingOperation`, `Edge`). Don't generate a parallel codes table. A small unit registry may earn its keep later. |
+| `registry/` | **Skip for now.** | Use library-side enums only where they buy JSON round-trips (`AcquisitionMode`, `Edge`, `AnalogTriggerSlope`). NI-owned constants such as `TerminalConfiguration`, `ThermocoupleType`, `LoggingMode`, and `LoggingOperation` are imported from `nidaqmx.constants` directly; don't generate a parallel codes table. |
 | `devices/base.py`, `devices/session.py` | **Port the *shape*, not the implementation.** `DaqSession` plays the role of the `Session`/`Device` facade — every operation goes through one dispatch point that captures timing, holds the lock, and wraps errors. | The session no longer holds a serial port + protocol client; it holds a `nidaqmx.Task` (via the backend) + the `TaskSpec`. Note: sartoriuslib's facade is `devices/balance.py`, not `devices/base.py` — the shape generalizes. |
-| `devices/factory.py` (`open_device`) | **Direct port.** `open_device(spec, *, backend=None, timeout=10.0)`. | Returns an async CM that drives the backend setup. The object being opened is a NI task, not a serial device. |
+| `devices/factory.py` (`open_device`) | **Direct port.** `await open_device(spec, *, backend=None, timeout=10.0, autostart=True, confirm_start=False)`. | Returns a configured `DaqSession`; the session is the async context manager. The object being opened is a NI task, not a serial device. |
 | `devices/discovery.py` | **Direct port, trivial body.** Wraps `nidaqmx.system.System.local()` and per-device `ai_physical_chans` / `ao_physical_chans` / `di_lines` / `do_lines` enumeration into a `DeviceInfo` of the same shape the other libs return. | See §19. |
 | `manager.py` | **Direct port.** `DaqManager` with `add` / `remove` / `close`, `ErrorPolicy.RAISE` / `RETURN`, `DeviceResult`. The port-keyed lock becomes a per-Task lock (or per-device lock when serializing tasks that share a card — see §15.3). LIFO unwind, ref-counting, `ExceptionGroup`-on-failure semantics — all identical. | This is one of the cleanest ports. The Manager's job (named-resource lifecycle + group dispatch + structured error handling) is domain-agnostic. |
 | `streaming/sample.py` | **Replaced by `streaming/sample.py` (DaqSample) + `streaming/block.py` (DaqBlock).** | The ecosystem `Sample` schemas have already diverged between alicatlib and sartoriuslib (see §8.8). Don't add `device_time` cross-cutting to either lib — it would be `None` 99% of the time and the schemas aren't parity-aligned anyway. `DaqReading` is the cross-instrument bridge. |
 | `streaming/recorder.py` | **Port the absolute-target loop for software-timed mode (§11.3.1). Add a hardware-timed path (§11.3.2).** | `record_polled` mirrors alicatlib's loop exactly. `record` is new — it owns the driver-thread → `queue.SimpleQueue` → anyio bridge for hardware-clocked acquisition. |
-| `sinks/` (whole tree) | **Direct copy.** Same `SampleSink` / `BlockSink` Protocols, same `pipe()` driver, same `sample_to_row`, same Csv/Jsonl/Sqlite/Parquet/Postgres/Memory implementations. Add `TdmsSink` (driver-side, see §14.6). | This is the single biggest reason to build the package: rows from a NI card land in the same SQLite table shape as rows from a flow controller. Each sink declares which data types it accepts (`DaqReading`, `DaqSample`, `DaqBlock`). |
+| `sinks/` (whole tree) | **Direct copy.** Same `SampleSink` / `BlockSink` Protocols, same `pipe()` driver, same `sample_to_row`, same Csv/Jsonl/Sqlite/Parquet/Postgres/Memory implementations. TDMS is configured driver-side via `TdmsLogging`, not as a sink. | This is the single biggest reason to build the package: rows from a NI card land in the same SQLite table shape as rows from a flow controller. Each sink declares which data types it accepts (`DaqReading`, `DaqSample`, `DaqBlock`). |
 | `sync/` | **Direct port.** Same `SyncPortal` pattern, blocking `Daq` facade. | The sync facade goes sync → portal → async → `to_thread` → blocking nidaqmx call. It works; document the layering and don't apologize for it. |
 | `testing.py` | **Heavy port.** Provides `FakeDaqBackend` convenience builders, scripted block sequences, simulated callback firings for testing the §11.3.2 bridge. | Analog to `FakeTransport` and what makes the test suite not require a DAQ card. |
 | (none) | **New: `system/`.** Device discovery + `DeviceInfo` model. | No analog in the existing libs — serial devices don't enumerate. |

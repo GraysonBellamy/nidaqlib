@@ -106,7 +106,7 @@ async def test_e3_preflight_rejects_overlapping_channel(
 # ---------------------------------------------------------------------------
 
 
-async def test_e4_invalid_spec_returns_taskresult_error(
+async def test_e4_invalid_spec_returns_deviceresult_error(
     tc_config: TcHardwareConfig,
     tc_spec_on_demand: TaskSpec,
 ) -> None:
