@@ -422,7 +422,7 @@ class DaqSession:
             received_at=received_at,
             midpoint_at=midpoint_at,
             monotonic_ns=midpoint_monotonic,
-            elapsed_s=(received_at - requested_at).total_seconds(),
+            latency_s=(received_at - requested_at).total_seconds(),
             metadata=dict(self._spec.metadata),
             error=None,
         )

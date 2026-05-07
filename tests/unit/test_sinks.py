@@ -85,7 +85,7 @@ def _reading() -> DaqReading:
         received_at=now,
         midpoint_at=now,
         monotonic_ns=10,
-        elapsed_s=0.001,
+        latency_s=0.001,
     )
 
 
@@ -238,7 +238,7 @@ async def test_sqlite_quotes_channel_derived_columns(tmp_path: Path) -> None:
         received_at=now,
         midpoint_at=now,
         monotonic_ns=10,
-        elapsed_s=0.001,
+        latency_s=0.001,
     )
     out = tmp_path / "quoted.sqlite"
     async with SqliteSink(out) as sink:

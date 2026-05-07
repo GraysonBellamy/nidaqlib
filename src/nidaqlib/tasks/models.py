@@ -55,7 +55,7 @@ class DaqReading:
         monotonic_ns: ``time.monotonic_ns()`` at the midpoint. Use this — not
             wall-clock — for join arithmetic; wall-clock is non-monotonic
             across clock adjustments.
-        elapsed_s: ``received_at - requested_at`` in seconds.
+        latency_s: ``received_at - requested_at`` in seconds.
         metadata: Free-form scalar metadata (often the source ``TaskSpec``'s
             metadata, optionally merged with manager-level metadata).
         error: Populated only under ``ErrorPolicy.RETURN``. Always ``None``
@@ -70,7 +70,7 @@ class DaqReading:
     received_at: datetime
     midpoint_at: datetime
     monotonic_ns: int
-    elapsed_s: float
+    latency_s: float
     metadata: Mapping[str, str | int | float | bool] = field(default_factory=_empty_metadata)
     error: NIDaqError | None = None
 

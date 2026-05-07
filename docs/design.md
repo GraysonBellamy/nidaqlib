@@ -467,7 +467,7 @@ class DaqReading:
     received_at: datetime                         # wall-clock just after to_thread.run_sync
     midpoint_at: datetime                         # midpoint of the request/receive window
     monotonic_ns: int                             # monotonic_ns at midpoint
-    elapsed_s: float                              # received_at - requested_at, seconds
+    latency_s: float                              # received_at - requested_at, seconds
     metadata: Mapping[str, str | int | float | bool] = field(default_factory=dict)
     error: NIDaqError | None = None               # populated only under ErrorPolicy.RETURN (see §13.2)
 ```
@@ -475,7 +475,7 @@ class DaqReading:
 Field-naming notes:
 
 - **`device` is the join key**, matching `alicatlib.Sample.device` and `sartoriuslib.Sample.device`. When `DaqReading` is emitted via `DaqManager`, `device` is the manager-add name. When emitted directly from a `DaqSession` without a manager, `device` falls back to `spec.name`.
-- **`elapsed_s`** matches sartoriuslib's field name (alicatlib uses `latency_s` for the same quantity — that divergence is captured in §8.8).
+- **`latency_s`** matches alicatlib's and watlowlib's field name for the same quantity (sartoriuslib uses `elapsed_s` — that divergence is captured in §8.8).
 - **`requested_at` / `received_at` / `midpoint_at`** are wall-clock provenance for cross-instrument latency analysis. Use `monotonic_ns` for scheduling and join arithmetic; wall-clock fields are not monotonic across clock adjustments.
 
 ### 8.7 DaqBlock
@@ -529,7 +529,7 @@ A reasonable instinct is to make `nidaqlib` emit the same `Sample` row that `ali
 | second key        | `unit_id: str`     | —                     | `address: int`                  | `task: str \| None`                |
 | protocol marker   | —                  | `protocol`            | `protocol`                      | —                                  |
 | payload           | `frame: DataFrame` | `reading: Reading?`   | per-parameter scalar columns    | `values: Mapping[str, scalar]`     |
-| latency field     | `latency_s`        | `elapsed_s`           | `latency_s`                     | `elapsed_s` (matches sartoriuslib) |
+| latency field     | `latency_s`        | `elapsed_s`           | `latency_s`                     | `latency_s` (matches alicatlib/watlowlib) |
 | `requested_at`    | ✓                  | ✓                     | ✓                               | ✓                                  |
 | `received_at`     | ✓                  | ✓                     | ✓                               | ✓                                  |
 | `midpoint_at`     | ✓                  | ✓                     | ✓                               | ✓                                  |

@@ -162,7 +162,7 @@ present, and re-run.
 
 | ID | Test | What it proves |
 |---|---|---|
-| A1 | `test_a1_poll_returns_reading` | `open_device` + `poll()` round-trip on a TC. Provenance fields (`elapsed_s`, `monotonic_ns`, `midpoint_at`) populated and consistent. |
+| A1 | `test_a1_poll_returns_reading` | `open_device` + `poll()` round-trip on a TC. Provenance fields (`latency_s`, `monotonic_ns`, `midpoint_at`) populated and consistent. |
 | A2 | `test_a2_acquire_finite_block` | FINITE-mode `acquire(N)` returns one `(1, N)` `DaqBlock`; task is auto-stopped after the read. |
 | A3 | `test_a3_continuous_read_block_advances_counters` | Five sequential `read_block` calls produce monotonic `block_index` and `first_sample_index`; `task_started_at` anchor stable across the run. |
 | A4 | `test_a4_raw_task_escape_hatch` | `session.raw_task` returns the underlying `nidaqmx.Task` immediately after `start`; channel count matches the spec. |

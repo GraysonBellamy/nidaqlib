@@ -166,7 +166,7 @@ def reading_to_row(reading: DaqReading) -> dict[str, float | int | str | bool | 
     - ``device``, ``task`` — join keys.
     - ``requested_at`` / ``received_at`` / ``midpoint_at`` — ISO 8601.
     - ``monotonic_ns`` — int.
-    - ``elapsed_s`` — float seconds.
+    - ``latency_s`` — float seconds.
     - one column per channel (``values`` keys), values flattened.
     - one ``<channel>_unit`` column per channel.
     - ``error_type`` / ``error_message`` — populated only on error rows.
@@ -180,7 +180,7 @@ def reading_to_row(reading: DaqReading) -> dict[str, float | int | str | bool | 
         "received_at": reading.received_at.isoformat(),
         "midpoint_at": reading.midpoint_at.isoformat(),
         "monotonic_ns": reading.monotonic_ns,
-        "elapsed_s": reading.elapsed_s,
+        "latency_s": reading.latency_s,
     }
     row.update(reading.values)
     row.update({f"{ch}_unit": unit for ch, unit in reading.units.items()})

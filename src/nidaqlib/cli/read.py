@@ -148,7 +148,7 @@ def _format_reading(reading: DaqReading, *, as_json: bool) -> str:
             "task": reading.task,
             "midpoint_at": reading.midpoint_at.isoformat(),
             "monotonic_ns": reading.monotonic_ns,
-            "elapsed_s": reading.elapsed_s,
+            "latency_s": reading.latency_s,
             "values": dict(reading.values),
             "units": dict(reading.units),
         }

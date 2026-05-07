@@ -257,7 +257,7 @@ def test_daq_reading_construction() -> None:
         received_at=now,
         midpoint_at=now,
         monotonic_ns=0,
-        elapsed_s=0.001,
+        latency_s=0.001,
     )
     assert math.isclose(reading.values["ch0"], 1.5)
     assert reading.error is None

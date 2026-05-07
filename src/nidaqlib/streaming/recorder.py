@@ -265,7 +265,7 @@ def _build_error_reading(source: DaqSession, exc: NIDaqError) -> DaqReading:
         received_at=now,
         midpoint_at=now,
         monotonic_ns=_time.monotonic_ns(),
-        elapsed_s=0.0,
+        latency_s=0.0,
         metadata=dict(source.spec.metadata),
         error=exc,
     )

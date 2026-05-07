@@ -55,7 +55,7 @@ async def test_a1_poll_returns_reading(
     assert isinstance(value, float)
     assert_plausible_temperature(value, tc_config, where="A1.poll")
     # Provenance fields are populated.
-    assert reading.elapsed_s >= 0.0
+    assert reading.latency_s >= 0.0
     assert reading.monotonic_ns > 0
     assert (
         reading.midpoint_at
