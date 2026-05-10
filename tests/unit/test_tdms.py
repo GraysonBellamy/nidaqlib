@@ -11,11 +11,12 @@ Covers design doc §13.2 / §14.6:
 from __future__ import annotations
 
 import pytest
-from nidaqmx.constants import LoggingMode, LoggingOperation
 
 from nidaqlib import (
     AcquisitionMode,
     AnalogInputVoltage,
+    LoggingMode,
+    LoggingOperation,
     TaskSpec,
     TdmsLogging,
     Timing,

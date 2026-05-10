@@ -7,8 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-10
+
 ### Added
 
+- Per-channel analog-input configuration:
+  - `AnalogInputBase` shared parent for `AnalogInputVoltage` and
+    `ThermocoupleInput`. Carries the per-channel knobs NI exposes only
+    as channel properties on the object returned by
+    `add_ai_*_chan(...)` — not as kwargs.
+  - `adc_timing_mode` (`ADCTimingMode`) plus `adc_custom_timing_mode`
+    for the `ADCTimingMode.CUSTOM` case. Trades conversion rate for
+    resolution and configures line-frequency rejection on delta-sigma
+    modules (NI 9213 / 9214, 9239, 4300-series). `__post_init__`
+    rejects mismatched pairing — `CUSTOM` requires the integer code,
+    and the integer code is only valid with `CUSTOM`.
+  - `auto_zero_mode` (`AutoZeroType`) — `NONE` / `ONCE` /
+    `EVERY_SAMPLE`. Controls per-channel auto-zero calibration on
+    modules that support it.
+  - `NidaqmxBackend._apply_ai_channel_attrs` writes both attributes as
+    channel properties after `add_ai_*_chan` returns. Module-level
+    support is detected at set time; unsupported attributes surface as
+    `NIDaqBackendError` carrying NI's error code.
+- `nidaqlib.constants` module re-exporting NI driver constants:
+  `ADCTimingMode`, `AutoZeroType`, `CJCSource`, `LoggingMode`,
+  `LoggingOperation`, `TemperatureUnits`, `TerminalConfiguration`,
+  `ThermocoupleType`. All eight also re-exported at the top level so
+  `from nidaqlib import ADCTimingMode` works.
+- `docs/channels.md`: new "AI channel attributes", "ADC timing mode",
+  and "Auto-zero mode" sections covering trade-offs, mode tables, and
+  hardware-support caveats.
 - Synchronization, counters, and metadata:
   - `TriggerSpec` hierarchy (design doc §8.1):
     `DigitalEdgeStartTrigger`, `AnalogEdgeStartTrigger`,
@@ -70,3 +98,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `_logging.py` and `_runtime.py` ported from the sibling
   `alicatlib` / `sartoriuslib` packages.
 - Design document (`docs/design.md`).
+
+### Changed
+
+- CLIs (`nidaq-read`, `nidaq-capture`) and the test suite now import NI
+  driver constants from `nidaqlib.constants` rather than reaching
+  through to `nidaqmx.constants` directly. The members are the same
+  enum objects — `nidaqlib` does not re-shape them.
+
+### Fixed
+
+- `AnalogInputVoltage.terminal_config` is now serialised via the
+  enum's `.value` int and restored on `from_dict`. Prior versions
+  stored the enum object as-is, breaking JSON round-trip whenever
+  `terminal_config` was set.
+
+[0.2.0]: https://github.com/GraysonBellamy/nidaqlib/releases/tag/v0.2.0
+[0.1.0]: https://github.com/GraysonBellamy/nidaqlib/releases/tag/v0.1.0

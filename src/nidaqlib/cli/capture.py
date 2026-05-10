@@ -157,8 +157,7 @@ async def _capture_tdms(
     out: Path,
 ) -> None:
     """Driver-side TDMS capture — no application-side sink."""
-    from nidaqmx.constants import LoggingMode  # noqa: PLC0415
-
+    from nidaqlib.constants import LoggingMode  # noqa: PLC0415
     from nidaqlib.streaming import record  # noqa: PLC0415
     from nidaqlib.tasks.spec import TdmsLogging  # noqa: PLC0415
 
@@ -178,7 +177,7 @@ async def _capture_tdms(
 
 def _build_spec(args: argparse.Namespace) -> TaskSpec:
     if args.thermocouple_type is not None:
-        from nidaqmx.constants import ThermocoupleType  # noqa: PLC0415
+        from nidaqlib.constants import ThermocoupleType  # noqa: PLC0415
 
         tc_type = ThermocoupleType[args.thermocouple_type]
         min_val = args.min_val if args.min_val is not None else _DEFAULT_TC_MIN_DEGC

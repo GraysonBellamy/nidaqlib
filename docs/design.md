@@ -412,15 +412,27 @@ class ChannelSpec:
 
 Concrete subclasses map to common NI channel creation methods. Each subclass declares a `kind: ClassVar[str]` for use as a discriminator during serialization (e.g., `"ai_voltage"`, `"thermocouple"`).
 
+The two analog-input subclasses share an `AnalogInputBase` intermediate class that carries the per-channel knobs NI exposes only as properties on the object returned by `add_ai_*_chan(...)`:
+
+```python
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AnalogInputBase(ChannelSpec):
+    adc_timing_mode: ADCTimingMode | None = None
+    adc_custom_timing_mode: int | None = None
+    auto_zero_mode: AutoZeroType | None = None
+```
+
+`adc_timing_mode` selects between AUTOMATIC, HIGH_RESOLUTION, HIGH_SPEED, BEST_50_HZ_REJECTION, BEST_60_HZ_REJECTION, and CUSTOM. `adc_custom_timing_mode` is paired with `CUSTOM` (validated at construction). `auto_zero_mode` selects between NONE, ONCE, and EVERY_SAMPLE. The backend writes each one as a channel property after `add_ai_*_chan(...)` returns, so module-level support is detected at set time and surfaces as `NIDaqBackendError`.
+
 ### 8.3 AnalogInputVoltage
 
 ```python
 @dataclass(frozen=True, slots=True, kw_only=True)
-class AnalogInputVoltage(ChannelSpec):
+class AnalogInputVoltage(AnalogInputBase):
     kind: ClassVar[str] = "ai_voltage"
     min_val: float = -10.0
     max_val: float = 10.0
-    terminal_config: TerminalConfig | None = None
+    terminal_config: TerminalConfiguration | None = None
     custom_scale_name: str | None = None
 ```
 
@@ -428,14 +440,14 @@ class AnalogInputVoltage(ChannelSpec):
 
 ```python
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ThermocoupleInput(ChannelSpec):
+class ThermocoupleInput(AnalogInputBase):
     kind: ClassVar[str] = "thermocouple"
     thermocouple_type: ThermocoupleType
     min_val: float
     max_val: float
-    cjc_source: CjcSource | None = None
+    cjc_source: CJCSource | None = None
     cjc_val: float | None = None
-    units: TemperatureUnit = TemperatureUnit.DEG_C
+    units: TemperatureUnits = TemperatureUnits.DEG_C
 ```
 
 Thermocouples are likely important for the lab use case, but they should not be the very first feature unless needed immediately. Voltage input is a cleaner v0.1 target. (`kw_only=True` plus the absence of defaults on `thermocouple_type`/`min_val`/`max_val` is the canonical pattern for required fields after a defaulted parent.)
@@ -1241,12 +1253,14 @@ task.in_stream.configure_logging(
 )
 ```
 
-`LoggingMode` and `LoggingOperation` live in `nidaqmx.constants`. Callers
-import them from NI directly; `nidaqlib` stores them on `TdmsLogging`
-without wrapping them in parallel enums. The wrapper config:
+`LoggingMode` and `LoggingOperation` are NI's enums in
+`nidaqmx.constants`. `nidaqlib` stores them on `TdmsLogging` without
+wrapping them in parallel enums and re-exports the members at
+`nidaqlib.constants` (and the package root) so callers have a single
+import surface. The wrapper config:
 
 ```python
-from nidaqmx.constants import LoggingMode, LoggingOperation
+from nidaqlib.constants import LoggingMode, LoggingOperation
 
 @dataclass(frozen=True, slots=True)
 class TdmsLogging:

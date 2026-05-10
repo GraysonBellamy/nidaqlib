@@ -111,7 +111,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _build_spec(args: argparse.Namespace) -> TaskSpec:
     if args.thermocouple_type is not None:
-        from nidaqmx.constants import ThermocoupleType  # noqa: PLC0415
+        from nidaqlib.constants import ThermocoupleType  # noqa: PLC0415
 
         tc_type = ThermocoupleType[args.thermocouple_type]
         min_val = args.min_val if args.min_val is not None else _DEFAULT_TC_MIN_DEGC

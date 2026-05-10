@@ -11,8 +11,14 @@ Attach a `TdmsLogging` to your `TaskSpec` and the session calls
 `configure_logging` on the underlying NI task as part of `start()`:
 
 ```python
-from nidaqlib import AnalogInputVoltage, TaskSpec, TdmsLogging, Timing
-from nidaqmx.constants import LoggingMode, LoggingOperation
+from nidaqlib import (
+    AnalogInputVoltage,
+    LoggingMode,
+    LoggingOperation,
+    TaskSpec,
+    TdmsLogging,
+    Timing,
+)
 
 spec = TaskSpec(
     name="fast_ai",
@@ -26,8 +32,9 @@ spec = TaskSpec(
 )
 ```
 
-Re-import the enums from `nidaqmx.constants` directly — they are NI's
-constants and `nidaqlib` does not re-shape them.
+`LoggingMode` and `LoggingOperation` are NI driver enums re-exported
+from `nidaqlib` (also available at `nidaqlib.constants`). They are the
+same members exposed by `nidaqmx.constants`.
 
 ## `LOG_AND_READ` vs `LOG`
 

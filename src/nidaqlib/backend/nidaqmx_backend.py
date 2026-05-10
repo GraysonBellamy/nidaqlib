@@ -199,7 +199,8 @@ class NidaqmxBackend:
             kwargs["terminal_config"] = spec.terminal_config
         if spec.custom_scale_name is not None:
             kwargs["custom_scale_name"] = spec.custom_scale_name
-        task.ai_channels.add_ai_voltage_chan(**kwargs)
+        chan = task.ai_channels.add_ai_voltage_chan(**kwargs)
+        self._apply_ai_channel_attrs(chan, spec)
 
     def _add_thermocouple(self, task: Any, spec: Any) -> None:
         tc_kwargs: dict[str, Any] = {
@@ -215,7 +216,28 @@ class NidaqmxBackend:
             tc_kwargs["cjc_source"] = spec.cjc_source
         if spec.cjc_val is not None:
             tc_kwargs["cjc_val"] = spec.cjc_val
-        task.ai_channels.add_ai_thrmcpl_chan(**tc_kwargs)
+        chan = task.ai_channels.add_ai_thrmcpl_chan(**tc_kwargs)
+        self._apply_ai_channel_attrs(chan, spec)
+
+    @staticmethod
+    def _apply_ai_channel_attrs(chan: Any, spec: Any) -> None:
+        """Apply per-channel NI attributes that aren't kwargs to ``add_ai_*_chan``.
+
+        NI exposes a handful of AI-channel knobs (ADC timing mode,
+        auto-zero mode, ...) only as properties on the channel object the
+        ``add_*`` call returns. This helper writes each one when the spec
+        opts in. The custom-timing-mode integer is paired with
+        ``ADCTimingMode.CUSTOM`` (``__post_init__`` enforces that). Hardware
+        that does not support an attribute raises ``DaqError`` here, which
+        the calling :meth:`add_channel` handler wraps as
+        :class:`NIDaqBackendError`.
+        """
+        if spec.adc_timing_mode is not None:
+            chan.ai_adc_timing_mode = spec.adc_timing_mode
+            if spec.adc_custom_timing_mode is not None:
+                chan.ai_adc_custom_timing_mode = spec.adc_custom_timing_mode
+        if spec.auto_zero_mode is not None:
+            chan.ai_auto_zero_mode = spec.auto_zero_mode
 
     def _add_ao_voltage(self, task: Any, spec: Any) -> None:
         ao_kwargs: dict[str, Any] = {

@@ -183,8 +183,8 @@ def tc_config() -> TcHardwareConfig:
 
 
 def _resolve_tc_type(name: str) -> Any:
-    """Map a single-letter TC type string to ``nidaqmx.constants.ThermocoupleType``."""
-    from nidaqmx.constants import ThermocoupleType
+    """Map a single-letter TC type string to :class:`nidaqlib.ThermocoupleType`."""
+    from nidaqlib.constants import ThermocoupleType
 
     table = {
         "J": ThermocoupleType.J,

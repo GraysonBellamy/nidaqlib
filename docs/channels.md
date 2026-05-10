@@ -24,8 +24,7 @@ Output, digital, and counter channel specs are also available:
 ## `AnalogInputVoltage`
 
 ```python
-from nidaqlib import AnalogInputVoltage
-from nidaqmx.constants import TerminalConfiguration
+from nidaqlib import AnalogInputVoltage, TerminalConfiguration
 
 ch = AnalogInputVoltage(
     physical_channel="Dev1/ai0",
@@ -47,12 +46,20 @@ When to pick which:
   device default is wrong.
 - `custom_scale_name` references a pre-configured scale in NI MAX. With
   it set, `min_val`/`max_val` are scaled engineering units, not volts.
+- `adc_timing_mode` selects the per-channel ADC timing mode on
+  delta-sigma hardware (see [ADC timing mode](#adc-timing-mode) below).
+- `auto_zero_mode` selects the per-channel auto-zero behaviour on
+  modules that support it (see [Auto-zero mode](#auto-zero-mode) below).
 
 ## `ThermocoupleInput`
 
 ```python
-from nidaqlib import ThermocoupleInput
-from nidaqmx.constants import CJCSource, TemperatureUnits, ThermocoupleType
+from nidaqlib import (
+    CJCSource,
+    TemperatureUnits,
+    ThermocoupleInput,
+    ThermocoupleType,
+)
 
 oven = ThermocoupleInput(
     physical_channel="Dev1/ai2",
@@ -66,9 +73,80 @@ oven = ThermocoupleInput(
 )
 ```
 
-Re-export note: `ThermocoupleType`, `CJCSource`, and `TemperatureUnits`
-come from `nidaqmx.constants`. Import them from there directly — they
-are NI's constants and `nidaqlib` does not re-shape them.
+NI driver constants (`ThermocoupleType`, `CJCSource`, `TemperatureUnits`,
+`TerminalConfiguration`, `ADCTimingMode`, `AutoZeroType`, `LoggingMode`,
+`LoggingOperation`) are re-exported from `nidaqlib` and
+`nidaqlib.constants`. They are the same enum members exposed by
+`nidaqmx.constants` — `nidaqlib` does not re-shape them.
+
+## AI channel attributes (`AnalogInputBase`)
+
+`AnalogInputVoltage` and `ThermocoupleInput` both inherit from
+`AnalogInputBase`, which carries the per-channel knobs NI exposes only
+as channel properties on the object returned by `add_ai_*_chan(...)` —
+not as kwargs. `nidaqlib` writes each one for you after the channel is
+added. Unsupported attributes (e.g. ADC timing on a 9205) surface as
+`NIDaqBackendError` carrying NI's error code at set time.
+
+## ADC timing mode
+
+`adc_timing_mode` (with `adc_custom_timing_mode` for the `CUSTOM` case)
+trades conversion rate for resolution and configures
+line-frequency rejection on delta-sigma modules (NI 9213/9214 in the
+thermocouple line, 9239 / 4300-series for voltage).
+
+```python
+from nidaqlib import ADCTimingMode, ThermocoupleInput, ThermocoupleType
+
+tc = ThermocoupleInput(
+    physical_channel="cDAQ1Mod1/ai0",
+    thermocouple_type=ThermocoupleType.K,
+    min_val=0.0,
+    max_val=300.0,
+    adc_timing_mode=ADCTimingMode.HIGH_RESOLUTION,   # 24-bit on a 9213
+)
+```
+
+Available modes:
+
+| Mode | When to pick it |
+|---|---|
+| `AUTOMATIC` | Default. NI picks based on the configured sample rate. |
+| `HIGH_RESOLUTION` | Maximum resolution and noise rejection; lowest conversion rate. Right for slow / high-precision thermocouple or strain reads. |
+| `HIGH_SPEED` | Faster conversions, lower resolution. Right when throughput matters more than precision. |
+| `BEST_50_HZ_REJECTION` | Filter response tuned to suppress 50 Hz mains hum (EU). |
+| `BEST_60_HZ_REJECTION` | Filter response tuned to suppress 60 Hz mains hum (US). |
+| `CUSTOM` | Use a device-specific timing mode via `adc_custom_timing_mode` (an integer code). |
+
+Setting `adc_custom_timing_mode` without
+`adc_timing_mode=ADCTimingMode.CUSTOM` is rejected at construction time.
+
+## Auto-zero mode
+
+`auto_zero_mode` selects whether the channel performs an auto-zero
+calibration to remove DC offset bias. NI exposes this via
+`ai_auto_zero_mode`; common on delta-sigma thermocouple modules
+(NI 9213/9214) and some voltage modules.
+
+```python
+from nidaqlib import AutoZeroType, ThermocoupleInput, ThermocoupleType
+
+tc = ThermocoupleInput(
+    physical_channel="cDAQ1Mod1/ai0",
+    thermocouple_type=ThermocoupleType.K,
+    min_val=0.0,
+    max_val=300.0,
+    auto_zero_mode=AutoZeroType.ONCE,    # auto-zero at acquisition start
+)
+```
+
+Available modes:
+
+| Mode | When to pick it |
+|---|---|
+| `NONE` | Default. No auto-zero. Right when the source is well-behaved or the offset doesn't matter for your measurement. |
+| `ONCE` | Auto-zero once when the task starts. The most common useful setting — removes startup-time DC offset without slowing acquisition. |
+| `EVERY_SAMPLE` | Auto-zero every conversion. Best DC-offset rejection at the cost of throughput. Right for very-low-drift / very-low-rate work. |
 
 ## When to use voltage vs. thermocouple
 

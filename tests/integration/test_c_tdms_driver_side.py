@@ -78,7 +78,7 @@ async def test_c1_tdms_log_only_emits_empty_stream(
     ``read_block`` waiting for samples that the driver consumed before
     the application could see them.
     """
-    from nidaqmx.constants import LoggingMode
+    from nidaqlib.constants import LoggingMode
 
     tdms_file = _tdms_file_factory()
     tdms_path = hw_tmp_dir / "c1.tdms"
@@ -135,7 +135,7 @@ async def test_c2_tdms_log_and_read_dual_path(
     hw_tmp_dir: Path,
 ) -> None:
     """``LOG_AND_READ`` writes the TDMS file *and* delivers blocks to the recorder."""
-    from nidaqmx.constants import LoggingMode
+    from nidaqlib.constants import LoggingMode
 
     tdms_file = _tdms_file_factory()
     tdms_path = hw_tmp_dir / "c2.tdms"

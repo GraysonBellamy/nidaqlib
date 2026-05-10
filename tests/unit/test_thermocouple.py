@@ -5,6 +5,7 @@ Covers:
 - kw-only / frozen invariants identical to the AI voltage spec.
 - ``to_dict`` / ``from_dict`` round-trip via ``ChannelSpec``'s registry.
 - Backend dispatch (fake backend records the spec verbatim).
+- Inherited ADC-timing-mode plumbing from :class:`AnalogInputBase`.
 """
 
 from __future__ import annotations
@@ -12,9 +13,16 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError
 
 import pytest
-from nidaqmx.constants import CJCSource, TemperatureUnits, ThermocoupleType
 
-from nidaqlib import NIDaqValidationError, TaskSpec, ThermocoupleInput
+from nidaqlib import (
+    ADCTimingMode,
+    CJCSource,
+    NIDaqValidationError,
+    TaskSpec,
+    TemperatureUnits,
+    ThermocoupleInput,
+    ThermocoupleType,
+)
 from nidaqlib.channels.base import ChannelSpec
 
 
@@ -110,6 +118,8 @@ def test_unknown_thermocouple_type_rejected() -> None:
         "cjc_source": None,
         "cjc_val": None,
         "units": TemperatureUnits.DEG_C.value,
+        "adc_timing_mode": None,
+        "adc_custom_timing_mode": None,
     }
     with pytest.raises(NIDaqValidationError):
         ThermocoupleInput.from_dict(payload)
@@ -126,3 +136,35 @@ def test_taskspec_with_thermocouple_round_trips() -> None:
     spec = TaskSpec(name="oven_task", channels=[tc])
     restored = TaskSpec.from_dict(spec.to_dict())
     assert restored == spec
+
+
+# -- ADC timing mode (inherited from AnalogInputBase) ------------------------
+
+
+def test_thermocouple_adc_timing_default_is_none() -> None:
+    """Unspecified ADC timing mode leaves NI's per-device default in place."""
+    tc = ThermocoupleInput(
+        physical_channel="Dev1/ai0",
+        thermocouple_type=ThermocoupleType.K,
+        min_val=0.0,
+        max_val=100.0,
+    )
+    assert tc.adc_timing_mode is None
+    assert tc.adc_custom_timing_mode is None
+
+
+def test_thermocouple_with_adc_timing_round_trips() -> None:
+    """``adc_timing_mode`` survives a JSON round-trip via ``.value``."""
+    tc = ThermocoupleInput(
+        physical_channel="Dev1/ai0",
+        thermocouple_type=ThermocoupleType.K,
+        min_val=0.0,
+        max_val=100.0,
+        adc_timing_mode=ADCTimingMode.HIGH_RESOLUTION,
+    )
+    payload = tc.to_dict()
+    assert payload["adc_timing_mode"] == ADCTimingMode.HIGH_RESOLUTION.value
+    assert isinstance(payload["adc_timing_mode"], int)
+    restored = ThermocoupleInput.from_dict(payload)
+    assert restored == tc
+    assert restored.adc_timing_mode is ADCTimingMode.HIGH_RESOLUTION

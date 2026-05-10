@@ -13,6 +13,7 @@ See ``docs/design.md`` for the architectural design.
 from __future__ import annotations
 
 from nidaqlib.channels import (
+    AnalogInputBase,
     AnalogInputVoltage,
     AnalogOutputVoltage,
     ChannelSpec,
@@ -27,6 +28,16 @@ from nidaqlib.channels import (
     ThermocoupleInput,
 )
 from nidaqlib.config import NidaqConfig, config_from_env
+from nidaqlib.constants import (
+    ADCTimingMode,
+    AutoZeroType,
+    CJCSource,
+    LoggingMode,
+    LoggingOperation,
+    TemperatureUnits,
+    TerminalConfiguration,
+    ThermocoupleType,
+)
 from nidaqlib.errors import (
     ErrorContext,
     NIDaqBackendError,
@@ -78,12 +89,16 @@ from nidaqlib.tasks.triggers import (
 from nidaqlib.version import __version__
 
 __all__ = [
+    "ADCTimingMode",
     "AcquisitionMode",
     "AcquisitionSummary",
     "AnalogEdgeStartTrigger",
+    "AnalogInputBase",
     "AnalogInputVoltage",
     "AnalogOutputVoltage",
     "AnalogTriggerSlope",
+    "AutoZeroType",
+    "CJCSource",
     "ChannelSpec",
     "CounterEdgeCountInput",
     "CounterFrequencyInput",
@@ -104,6 +119,8 @@ __all__ = [
     "Edge",
     "ErrorContext",
     "ErrorPolicy",
+    "LoggingMode",
+    "LoggingOperation",
     "NIDaqBackendError",
     "NIDaqConfigurationError",
     "NIDaqConfirmationRequiredError",
@@ -126,7 +143,10 @@ __all__ = [
     "TaskBuilder",
     "TaskSpec",
     "TdmsLogging",
+    "TemperatureUnits",
+    "TerminalConfiguration",
     "ThermocoupleInput",
+    "ThermocoupleType",
     "Timing",
     "TriggerSpec",
     "__version__",

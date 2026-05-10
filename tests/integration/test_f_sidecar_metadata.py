@@ -45,7 +45,7 @@ async def test_f1_sidecar_round_trip(
 ) -> None:
     """Capture a short TDMS run, write the sidecar, and read it back."""
     pytest.importorskip("nptdms", reason="nptdms not installed")
-    from nidaqmx.constants import LoggingMode
+    from nidaqlib.constants import LoggingMode
 
     tdms_path = hw_tmp_dir / "f1.tdms"
     spec = tc_spec_continuous.replace(logging=TdmsLogging(path=tdms_path, mode=LoggingMode.LOG))
