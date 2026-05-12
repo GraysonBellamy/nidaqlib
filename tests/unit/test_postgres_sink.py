@@ -8,6 +8,8 @@ alicatlib / sartoriuslib).
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import pytest
 
 from nidaqlib.sinks import PostgresConfig, PostgresSink
@@ -38,8 +40,10 @@ class TestPostgresConfigValidation:
         config = PostgresConfig(
             dsn="postgres://user:hunter2@db.example.com:5433/prod",
         )
-        assert "hunter2" not in config.target()
-        assert "db.example.com" in config.target()
+        target = config.target()
+        parsed = urlparse(target)
+        assert "hunter2" not in target
+        assert parsed.hostname == "db.example.com"
 
 
 class TestPostgresSinkConstruction:
