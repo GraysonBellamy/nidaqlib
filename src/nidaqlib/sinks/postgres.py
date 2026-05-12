@@ -41,7 +41,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Self
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from nidaqlib._logging import get_logger
 from nidaqlib.errors import (
@@ -218,17 +218,19 @@ class PostgresConfig:
             )
 
     def target(self) -> str:
-        """Return a log-safe description: ``host:port/db.schema``."""
+        """Return a log-safe URI describing the connection target."""
         if self.dsn is not None:
             parsed = urlparse(self.dsn)
             host = parsed.hostname or "?"
             port = parsed.port or self.port
             db = (parsed.path or "/?").lstrip("/") or "?"
+            scheme = parsed.scheme or "postgres"
         else:
             host = self.host or "?"
             port = self.port
             db = self.database or "?"
-        return f"{host}:{port}/{db}.{self.schema}"
+            scheme = "postgres"
+        return urlunparse((scheme, f"{host}:{port}", f"/{db}.{self.schema}", "", "", ""))
 
 
 def _load_asyncpg() -> Any:
