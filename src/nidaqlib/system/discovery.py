@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
-from nidaqlib.errors import ErrorContext, NIDaqBackendError, NIDaqDependencyError
+from nidaqlib.errors import ErrorContext, NIDaqBackendError, NIDaqDependencyError, NIDaqError
 from nidaqlib.system.models import DeviceInfo, DiscoveryResult, NIDaqDiscoveryResult
 
 if TYPE_CHECKING:
@@ -96,6 +96,21 @@ def find_devices() -> list[DiscoveryResult]:
     try:
         system = nidaqmx.system.System.local()
         devices = list(system.devices)
+    except (nidaqmx.errors.DaqNotFoundError, nidaqmx.errors.DaqNotSupportedError) as exc:
+        # Driver not installed, or platform unsupported (e.g. darwin). Neither
+        # subclasses DaqError, so they need their own clause — surface as a
+        # dependency failure rather than a backend error.
+        elapsed = time.monotonic() - started
+        wrapped: NIDaqError = NIDaqDependencyError(str(exc))
+        wrapped.__cause__ = exc
+        return [
+            DiscoveryResult(
+                ok=False,
+                port="",
+                error=wrapped,
+                elapsed_s=elapsed,
+            )
+        ]
     except nidaqmx.errors.DaqError as exc:  # pragma: no cover — hardware path
         elapsed = time.monotonic() - started
         wrapped = NIDaqBackendError(

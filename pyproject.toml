@@ -302,6 +302,10 @@ addopts = [
 ]
 filterwarnings = [
     "error",
+    # nidaqmx defines ctypes Structures with _pack_ but no explicit _layout_;
+    # Python 3.14 emits a DeprecationWarning at import time. Upstream issue,
+    # not actionable here — drop once nidaqmx-python sets _layout_ = "ms".
+    "ignore:.*AbsoluteTime.*:DeprecationWarning",
 ]
 
 # ---------------------------------------------------------------------------
