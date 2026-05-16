@@ -1,9 +1,9 @@
 """PostgreSQL sink — :mod:`asyncpg`, COPY by default, parameterised fallback.
 
-:class:`PostgresSink` writes :class:`DaqReading` / :class:`DaqSample`
-rows via :meth:`write_many`, and :class:`DaqBlock` summary rows via
+:class:`PostgresSink` writes :class:`DaqReading` rows via
+:meth:`write_many`, and :class:`DaqBlock` summary rows via
 :meth:`write` — one row per shape, routed to a per-shape table
-(``readings`` / ``samples`` / ``blocks`` by default). ``asyncpg`` is an
+(``readings`` / ``blocks`` by default). ``asyncpg`` is an
 optional dependency behind ``nidaqlib[postgres]``; the import is
 deferred to :meth:`open` so instantiation works on bare-core installs
 and :class:`~nidaqlib.errors.NIDaqSinkDependencyError` is raised only
@@ -29,11 +29,11 @@ Best-practice defaults baked in:
 - **``statement_timeout``** applied as a server setting so a wedged
   query cannot block the acquisition loop forever.
 
-Schema evolution mirrors the other tabular sinks (design doc §6).
-``create_tables=False`` reads the target tables' columns from
-``information_schema.columns`` on open and locks each per-shape
-schema to that set. ``create_tables=True`` switches to first-batch
-inference and runs ``CREATE TABLE IF NOT EXISTS`` per shape.
+Schema evolution mirrors the other tabular sinks. ``create_tables=False``
+reads the target tables' columns from ``information_schema.columns`` on
+open and locks each per-shape schema to that set. ``create_tables=True``
+switches to first-batch inference and runs ``CREATE TABLE IF NOT EXISTS``
+per shape.
 """
 
 from __future__ import annotations
@@ -50,13 +50,13 @@ from nidaqlib.errors import (
     NIDaqSinkWriteError,
 )
 from nidaqlib.sinks._schema import ColumnSpec, SchemaLock
-from nidaqlib.sinks.base import reading_to_row, sample_to_row
+from nidaqlib.sinks.base import reading_to_row
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from types import TracebackType
 
-    from nidaqlib.tasks.models import DaqBlock, DaqReading, DaqSample
+    from nidaqlib.tasks.models import DaqBlock, DaqReading
 
 __all__ = ["PostgresConfig", "PostgresSink"]
 
@@ -122,9 +122,13 @@ def _block_summary_row(block: DaqBlock) -> dict[str, float | int | str | bool | 
         "block_index": block.block_index,
         "first_sample_index": block.first_sample_index,
         "samples_per_channel": block.samples_per_channel,
+        "block_period_ns": block.block_period_ns,
         "sample_rate_hz": block.sample_rate_hz,
         "task_started_at": block.task_started_at.isoformat(),
         "t0": block.t0.isoformat(),
+        "t_mono_ns": block.t_mono_ns,
+        "t_utc": block.t_utc.isoformat(),
+        "t_midpoint_mono_ns": block.t_midpoint_mono_ns,
         "channels": ",".join(block.channels),
         "units": ",".join(
             unit if unit is not None else ""
@@ -151,7 +155,6 @@ class PostgresConfig:
         schema: Target schema. Validated against
             ``[A-Za-z_][A-Za-z0-9_]{0,62}``.
         table_readings: Table name for :class:`DaqReading` rows.
-        table_samples: Table name for :class:`DaqSample` rows.
         table_blocks: Table name for :class:`DaqBlock` summary rows.
         pool_min_size: Minimum pool size. Defaults to ``1``.
         pool_max_size: Maximum pool size. Defaults to ``4``.
@@ -176,7 +179,6 @@ class PostgresConfig:
     database: str | None = None
     schema: str = "public"
     table_readings: str = "readings"
-    table_samples: str = "samples"
     table_blocks: str = "blocks"
     pool_min_size: int = 1
     pool_max_size: int = 4
@@ -200,7 +202,6 @@ class PostgresConfig:
             raise ValueError(msg)
         _validate_identifier(self.schema, label="schema name")
         _validate_identifier(self.table_readings, label="table_readings")
-        _validate_identifier(self.table_samples, label="table_samples")
         _validate_identifier(self.table_blocks, label="table_blocks")
         if self.pool_min_size < 1 or self.pool_max_size < self.pool_min_size:
             msg = (
@@ -256,10 +257,10 @@ class _TableState:
 
 
 class PostgresSink:
-    """Append-only Postgres writer for DAQ readings, samples, and block summaries.
+    """Append-only Postgres writer for DAQ readings and block summaries.
 
-    One sink instance routes records to up to three tables, one per
-    shape (readings / samples / blocks). Each table's column set is
+    One sink instance routes records to up to two tables, one per
+    shape (readings / blocks). Each table's column set is
     locked on first write (``create_tables=True``) or read on
     :meth:`open` from ``information_schema.columns``
     (``create_tables=False``, the default).
@@ -272,10 +273,6 @@ class PostgresSink:
         self._readings = _TableState(
             table=config.table_readings,
             sink_name="postgres.readings",
-        )
-        self._samples = _TableState(
-            table=config.table_samples,
-            sink_name="postgres.samples",
         )
         self._blocks = _TableState(
             table=config.table_blocks,
@@ -341,7 +338,7 @@ class PostgresSink:
         )
 
         if not cfg.create_tables:
-            for state in (self._readings, self._samples, self._blocks):
+            for state in (self._readings, self._blocks):
                 await self._introspect_existing_table(state)
 
     async def _introspect_existing_table(self, state: _TableState) -> None:
@@ -393,29 +390,14 @@ class PostgresSink:
         state.lock.lock_to(specs)
         state.insert_sql = self._build_insert_sql(state)
 
-    async def write_many(
-        self,
-        items: Sequence[DaqReading] | Sequence[DaqSample],
-    ) -> None:
-        """Append :class:`DaqReading` or :class:`DaqSample` rows."""
+    async def write_many(self, items: Sequence[DaqReading]) -> None:
+        """Append :class:`DaqReading` rows."""
         if self._pool is None:
             raise RuntimeError("PostgresSink: write_many called before open()")
         if not items:
             return
-
-        from nidaqlib.tasks.models import DaqReading, DaqSample  # noqa: PLC0415
-
-        first = items[0]
-        if isinstance(first, DaqReading):
-            rows = [reading_to_row(r) for r in items]  # type: ignore[arg-type]
-            await self._insert_rows(rows, state=self._readings)
-        elif isinstance(first, DaqSample):  # pyright: ignore[reportUnnecessaryIsInstance]
-            rows = [sample_to_row(s) for s in items]  # type: ignore[arg-type]
-            await self._insert_rows(rows, state=self._samples)
-        else:  # pragma: no cover — defensive
-            raise NIDaqSinkWriteError(
-                f"PostgresSink.write_many: unsupported record type {type(first).__name__}",
-            )
+        rows = [reading_to_row(r) for r in items]
+        await self._insert_rows(rows, state=self._readings)
 
     async def write(self, block: DaqBlock) -> None:
         """Append one :class:`DaqBlock` as a summary row."""

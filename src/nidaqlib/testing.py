@@ -1,12 +1,17 @@
-"""Testing utilities — :class:`FakeDaqBackend` re-export.
+"""Testing utilities — fake backend re-export.
 
-The fake backend lives at :mod:`nidaqlib.backend.fake` so internal module
-graphs stay clean; this module is the user-facing surface mentioned in
-the design doc's §28 v0.1 import list.
+Re-exports :class:`~nidaqlib.backend.fake.FakeDaqBackend` for test code, and
+aliases it as :class:`NIDaqFakeBackend` for cross-library naming symmetry
+with the sibling libraries' fake-transport modules. The two names refer
+to exactly the same class.
 """
 
 from __future__ import annotations
 
 from nidaqlib.backend.fake import FakeDaqBackend
 
-__all__ = ["FakeDaqBackend"]
+NIDaqFakeBackend = FakeDaqBackend
+"""Cross-library-symmetric alias for :class:`FakeDaqBackend`."""
+
+
+__all__ = ["FakeDaqBackend", "NIDaqFakeBackend"]

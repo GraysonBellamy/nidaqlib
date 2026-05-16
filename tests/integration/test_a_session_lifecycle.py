@@ -56,11 +56,8 @@ async def test_a1_poll_returns_reading(
     assert_plausible_temperature(value, tc_config, where="A1.poll")
     # Provenance fields are populated.
     assert reading.latency_s >= 0.0
-    assert reading.monotonic_ns > 0
-    assert (
-        reading.midpoint_at
-        == reading.requested_at + (reading.received_at - reading.requested_at) / 2
-    )
+    assert reading.t_mono_ns > 0
+    assert reading.t_utc == reading.requested_at + (reading.received_at - reading.requested_at) / 2
 
 
 # A2 ------------------------------------------------------------------------
@@ -86,7 +83,10 @@ async def test_a2_acquire_finite_block(
     assert block.first_sample_index == 0
     assert block.samples_per_channel == samples_per_channel
     assert_close_float(block.sample_rate_hz, tc_config.rate_hz, where="A2.sample_rate_hz")
-    assert_close_float(block.dt_s, 1.0 / tc_config.rate_hz, where="A2.dt_s")
+    assert block.block_period_ns is not None
+    assert_close_float(
+        block.block_period_ns / 1e9, 1.0 / tc_config.rate_hz, where="A2.block_period_ns"
+    )
     # Spot-check a representative sample.
     assert_plausible_temperature(float(block.data[0, 0]), tc_config, where="A2.first_sample")
     assert_plausible_temperature(float(block.data[0, -1]), tc_config, where="A2.last_sample")
@@ -116,7 +116,10 @@ async def test_a3_continuous_read_block_advances_counters(
     # Shape invariants hold for every block
     for b in blocks:
         assert b.data.shape == (1, chunk)
-        assert_close_float(b.dt_s, 1.0 / tc_config.rate_hz, where="A3.dt_s")
+        assert b.block_period_ns is not None
+        assert_close_float(
+            b.block_period_ns / 1e9, 1.0 / tc_config.rate_hz, where="A3.block_period_ns"
+        )
 
 
 # A4 ------------------------------------------------------------------------

@@ -45,8 +45,9 @@ async def test_emits_readings_at_cadence() -> None:
     backend = FakeDaqBackend(read_block_default_shape=(1, 1))
     async with (
         await open_device(_make_spec(), backend=backend) as session,
-        record_polled(session, rate_hz=50.0, buffer_size=8) as (rx, _summary),
+        record_polled(session, rate_hz=50.0, buffer_size=8) as _rec,
     ):
+        rx, _summary = _rec.stream, _rec.summary
         seen: list[DaqReading] = []
         async for payload in rx:
             seen.append(cast("DaqReading", payload))
@@ -73,8 +74,9 @@ async def test_error_policy_return_emits_error_reading() -> None:
             rate_hz=50.0,
             error_policy=ErrorPolicy.RETURN,
             buffer_size=4,
-        ) as (rx, summary),
+        ) as _rec2,
     ):
+        rx, summary = _rec2.stream, _rec2.summary
         seen: list[DaqReading] = []
         async for payload in rx:
             seen.append(cast("DaqReading", payload))
@@ -98,8 +100,9 @@ async def test_drop_oldest_does_not_block_producer() -> None:
             rate_hz=500.0,
             buffer_size=1,
             overflow=OverflowPolicy.DROP_OLDEST,
-        ) as (rx, summary),
+        ) as _rec3,
     ):
+        rx, summary = _rec3.stream, _rec3.summary
         await anyio.sleep(0.05)
         payload = await rx.__anext__()
 

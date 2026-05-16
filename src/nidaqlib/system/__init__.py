@@ -1,13 +1,18 @@
-"""System discovery — :func:`list_devices`, :func:`list_physical_channels`.
+"""System discovery — :func:`find_devices`, :func:`list_physical_channels`.
 
-Wraps :class:`nidaqmx.system.System.local()` enough to drive helpful CLI
-commands and basic preflight validation; not a clone of NI MAX (design
-doc §19).
+See :mod:`nidaqlib.system.discovery` for behaviour and the
+:class:`DiscoveryResult` / :class:`DeviceInfo` shapes.
 """
 
 from __future__ import annotations
 
-from nidaqlib.system.discovery import list_devices, list_physical_channels
-from nidaqlib.system.models import DeviceInfo
+from nidaqlib.system.discovery import find_devices, list_physical_channels
+from nidaqlib.system.models import DeviceInfo, DiscoveryResult, NIDaqDiscoveryResult
 
-__all__ = ["DeviceInfo", "list_devices", "list_physical_channels"]
+__all__ = [
+    "DeviceInfo",
+    "DiscoveryResult",
+    "NIDaqDiscoveryResult",
+    "find_devices",
+    "list_physical_channels",
+]

@@ -1,8 +1,7 @@
 """In-memory sink — collects records in lists for tests and notebooks.
 
-:class:`InMemorySink` satisfies all three sink Protocols
+:class:`InMemorySink` satisfies both sink Protocols
 (:class:`~nidaqlib.sinks.base.ReadingSink`,
-:class:`~nidaqlib.sinks.base.SampleSink`,
 :class:`~nidaqlib.sinks.base.BlockSink`). Useful for unit tests, REPL
 exploration, and short-run captures.
 """
@@ -15,7 +14,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from types import TracebackType
 
-    from nidaqlib.tasks.models import DaqBlock, DaqReading, DaqSample
+    from nidaqlib.tasks.models import DaqBlock, DaqReading
 
 
 __all__ = ["InMemorySink"]
@@ -24,14 +23,13 @@ __all__ = ["InMemorySink"]
 class InMemorySink:
     """Collect every written record in a per-shape list.
 
-    :attr:`readings` / :attr:`samples` / :attr:`blocks` are appended to
-    (never re-assigned). :meth:`close` does not clear the buffers — the
-    point of this sink is post-run inspection.
+    :attr:`readings` / :attr:`blocks` are appended to (never re-assigned).
+    :meth:`close` does not clear the buffers — the point of this sink is
+    post-run inspection.
     """
 
     def __init__(self) -> None:
         self._readings: list[DaqReading] = []
-        self._samples: list[DaqSample] = []
         self._blocks: list[DaqBlock] = []
         self._open = False
         self._closed = False
@@ -40,11 +38,6 @@ class InMemorySink:
     def readings(self) -> list[DaqReading]:
         """Captured :class:`DaqReading` records, in write order."""
         return self._readings
-
-    @property
-    def samples(self) -> list[DaqSample]:
-        """Captured :class:`DaqSample` records, in write order."""
-        return self._samples
 
     @property
     def blocks(self) -> list[DaqBlock]:
@@ -61,33 +54,13 @@ class InMemorySink:
         self._open = True
         self._closed = False
 
-    async def write_many(
-        self,
-        items: Sequence[DaqReading] | Sequence[DaqSample],
-    ) -> None:
-        """Append every item to the matching per-shape buffer.
-
-        Sniffs the first item's type to dispatch (the sequence is required
-        to be homogeneous by the :class:`SampleSink` / :class:`ReadingSink`
-        Protocols). An empty sequence is a no-op.
-        """
+    async def write_many(self, items: Sequence[DaqReading]) -> None:
+        """Append every :class:`DaqReading` to the readings buffer."""
         if not self.is_open:
             raise RuntimeError("InMemorySink: write_many called before open()")
         if not items:
             return
-        # Late import to avoid circular dependency at module load.
-        from nidaqlib.tasks.models import DaqReading, DaqSample  # noqa: PLC0415
-
-        first = items[0]
-        if isinstance(first, DaqReading):
-            self._readings.extend(items)  # type: ignore[arg-type]
-        elif isinstance(first, DaqSample):  # pyright: ignore[reportUnnecessaryIsInstance]
-            self._samples.extend(items)  # type: ignore[arg-type]
-        else:  # pragma: no cover - defensive
-            raise TypeError(
-                f"InMemorySink.write_many expected DaqReading or DaqSample, "
-                f"got {type(first).__name__}"
-            )
+        self._readings.extend(items)
 
     async def write(self, block: DaqBlock) -> None:
         """Append one :class:`DaqBlock` to the block buffer."""

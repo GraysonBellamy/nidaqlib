@@ -23,8 +23,8 @@ class TestPostgresConfigValidation:
             PostgresConfig(dsn="postgres://localhost/db", host="localhost")
 
     def test_rejects_bad_table_name(self) -> None:
-        with pytest.raises(ValueError, match="table_samples"):
-            PostgresConfig(host="localhost", table_samples="bad name")
+        with pytest.raises(ValueError, match="table_readings"):
+            PostgresConfig(host="localhost", table_readings="bad name")
 
     def test_rejects_bad_schema_name(self) -> None:
         with pytest.raises(ValueError, match="schema name"):

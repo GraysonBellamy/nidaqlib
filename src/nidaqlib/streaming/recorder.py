@@ -38,8 +38,9 @@ from nidaqlib.errors import (
     NIDaqError,
     NIDaqReadError,
     NIDaqTaskStateError,
-    NIDaqTimeoutError,
+    NIDaqTransientError,
 )
+from nidaqlib.streaming._types import Recording
 from nidaqlib.streaming.block import (
     AcquisitionSummary,
     ErrorPolicy,
@@ -48,11 +49,12 @@ from nidaqlib.streaming.block import (
 from nidaqlib.tasks.models import DaqReading
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+    from collections.abc import AsyncGenerator, Mapping
 
     from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
     from nidaqlib.manager import DaqManager, DeviceResult
+    from nidaqlib.streaming.poll_source import PollSource
     from nidaqlib.tasks.session import DaqSession
 
 __all__ = ["record_polled"]
@@ -66,28 +68,31 @@ _PolledItem = Union["DaqReading", "Mapping[str, DeviceResult[DaqReading]]"]
 
 @asynccontextmanager
 async def record_polled(
-    source: DaqSession | DaqManager,
+    source: DaqSession | DaqManager | PollSource,
     *,
     rate_hz: float,
     error_policy: ErrorPolicy = ErrorPolicy.RAISE,
     overflow: OverflowPolicy = OverflowPolicy.BLOCK,
     buffer_size: int = 64,
-) -> AsyncGenerator[tuple[AsyncIterator[_PolledItem], AcquisitionSummary]]:
+) -> AsyncGenerator[Recording[_PolledItem]]:
     """Software-timed scalar polling at ``rate_hz``.
 
-    Yields ``(stream, summary)``. The per-tick payload depends on
-    ``source``:
+    Yields a :class:`Recording[T]`. The per-tick payload type ``T`` depends
+    on ``source``:
 
     - :class:`DaqSession` → one :class:`DaqReading` per tick.
     - :class:`DaqManager` → ``Mapping[str, DeviceResult[DaqReading]]`` per
       tick (matches :meth:`DaqManager.poll`).
+    - Any :class:`PollSource` (including :class:`PollSourceAdapter`) →
+      ``Mapping[str, DeviceResult[DaqReading]]`` returned by its ``poll()``.
 
     ``summary`` is updated in place during the run; a final snapshot is
     frozen on exit.
 
     Args:
         source: A started :class:`DaqSession` (whose timing is ``None`` or
-            :attr:`AcquisitionMode.ON_DEMAND`) or a :class:`DaqManager`.
+            :attr:`AcquisitionMode.ON_DEMAND`), a :class:`DaqManager`, or
+            any :class:`PollSource`.
         rate_hz: Target poll rate, in Hz. Must be > 0.
         error_policy: :attr:`RAISE` cancels the recorder on a poll error;
             :attr:`RETURN` emits a :class:`DaqReading` (or per-task
@@ -106,25 +111,27 @@ async def record_polled(
     if buffer_size < 1:
         raise ValueError(f"buffer_size must be >= 1, got {buffer_size!r}")
 
-    # Late import — manager imports streaming.block, which lives in this same
-    # package. Doing the import here keeps the package import graph acyclic.
+    # Late imports — manager imports streaming.block, session pulls in
+    # backend modules; both are heavy enough to keep off the recorder
+    # module's import path.
     from nidaqlib.manager import DaqManager  # noqa: PLC0415
+    from nidaqlib.tasks.session import DaqSession  # noqa: PLC0415
 
     if isinstance(source, DaqManager):
         if source.is_closed:
             raise NIDaqTaskStateError(
                 "record_polled() requires an open DaqManager; got a closed manager",
-                context=ErrorContext(operation="record_polled"),
+                context=ErrorContext(command_name="record_polled"),
             )
         if not source.names:
             raise NIDaqTaskStateError(
                 "record_polled() requires a DaqManager with at least one task",
-                context=ErrorContext(operation="record_polled"),
+                context=ErrorContext(command_name="record_polled"),
             )
-    elif not source.is_started:
+    elif isinstance(source, DaqSession) and not source.is_started:
         raise NIDaqTaskStateError(
             f"record_polled() requires a started session; task {source.spec.name!r} is not running",
-            context=ErrorContext(task_name=source.spec.name, operation="record_polled"),
+            context=ErrorContext(task_name=source.spec.name, command_name="record_polled"),
         )
 
     summary = AcquisitionSummary()
@@ -144,7 +151,7 @@ async def record_polled(
                 error_policy,
                 overflow,
             )
-        else:
+        elif isinstance(source, DaqSession):
             tg.start_soon(
                 _polled_producer,
                 source,
@@ -155,8 +162,22 @@ async def record_polled(
                 error_policy,
                 overflow,
             )
+        else:
+            # Any other PollSource — drive its poll() directly. Emits the
+            # same Mapping[str, DeviceResult[DaqReading]] shape as the
+            # manager path.
+            tg.start_soon(
+                _polled_source_producer,
+                source,
+                tx,
+                drop_rx,
+                summary,
+                period,
+                error_policy,
+                overflow,
+            )
         try:
-            yield rx, summary
+            yield Recording(stream=rx, summary=summary, rate_hz=rate_hz)
         finally:
             await tx.aclose()
             tg.cancel_scope.cancel()
@@ -195,8 +216,10 @@ async def _polled_producer(
                 await anyio.sleep_until(target)
             try:
                 reading = await source.poll()
-            except (NIDaqReadError, NIDaqTimeoutError) as exc:
+            except (NIDaqReadError, NIDaqTransientError) as exc:
                 summary.errors_observed += 1
+                if isinstance(exc, NIDaqTransientError):
+                    source._recoverable_error_count += 1  # pyright: ignore[reportPrivateUsage]
                 if error_policy is ErrorPolicy.RAISE:
                     raise
                 reading = _build_error_reading(source, exc)
@@ -205,6 +228,56 @@ async def _polled_producer(
     except (anyio.BrokenResourceError, anyio.ClosedResourceError):
         # Consumer closed mid-flight — asyncio surfaces this as
         # BrokenResourceError, trio as ClosedResourceError.
+        return
+    except anyio.EndOfStream:  # pragma: no cover
+        return
+
+
+async def _polled_source_producer(
+    source: PollSource,
+    tx: MemoryObjectSendStream[_PolledItem],
+    drop_rx: MemoryObjectReceiveStream[_PolledItem],
+    summary: AcquisitionSummary,
+    period: float,
+    error_policy: ErrorPolicy,
+    overflow: OverflowPolicy,
+) -> None:
+    """Absolute-target poll loop for any :class:`PollSource`.
+
+    The poll source decides its own error semantics inside :meth:`poll`. If
+    it raises an :class:`NIDaqError` directly, :attr:`ErrorPolicy.RAISE`
+    propagates it; under :attr:`ErrorPolicy.RETURN` we don't have a
+    canonical ``source`` to attach a synthesised error to, so we surface
+    an empty mapping for the tick and keep going. Adapters that need
+    per-task error rows should instead emit a populated
+    :class:`DeviceResult.failure` from inside their own ``poll()``.
+    """
+    start = anyio.current_time()
+    tick = 0
+    try:
+        while True:
+            target = start + tick * period
+            now = anyio.current_time()
+            if now > target + period:
+                missed = int((now - target) / period)
+                summary.blocks_dropped += missed
+                tick += missed
+                target = start + tick * period
+            if anyio.current_time() < target:
+                await anyio.sleep_until(target)
+            results: Mapping[str, DeviceResult[DaqReading]]
+            try:
+                results = await source.poll()
+            except NIDaqError:
+                summary.errors_observed += 1
+                if error_policy is ErrorPolicy.RAISE:
+                    raise
+                results = {}
+            errors_this_tick = sum(1 for r in results.values() if r.error is not None)
+            summary.errors_observed += errors_this_tick
+            await _send_payload(tx, drop_rx, results, summary, overflow)
+            tick += 1
+    except (anyio.BrokenResourceError, anyio.ClosedResourceError):
         return
     except anyio.EndOfStream:  # pragma: no cover
         return
@@ -261,10 +334,11 @@ def _build_error_reading(source: DaqSession, exc: NIDaqError) -> DaqReading:
         task=source.spec.name,
         values={},
         units={ch.display_name: ch.unit for ch in source.spec.channels},
+        t_mono_ns=_time.monotonic_ns(),
+        t_utc=now,
+        t_midpoint_mono_ns=None,
         requested_at=now,
         received_at=now,
-        midpoint_at=now,
-        monotonic_ns=_time.monotonic_ns(),
         latency_s=0.0,
         metadata=dict(source.spec.metadata),
         error=exc,

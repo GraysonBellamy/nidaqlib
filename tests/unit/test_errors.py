@@ -18,6 +18,7 @@ from nidaqlib import (
     NIDaqError,
     NIDaqReadError,
     NIDaqTimeoutError,
+    NIDaqTransientError,
 )
 from nidaqlib.backend.nidaqmx_backend import NidaqmxBackend
 
@@ -25,6 +26,7 @@ from nidaqlib.backend.nidaqmx_backend import NidaqmxBackend
 def test_hierarchy_root() -> None:
     assert issubclass(NIDaqReadError, NIDaqError)
     assert issubclass(NIDaqTimeoutError, NIDaqError)
+    assert issubclass(NIDaqTransientError, NIDaqError)
     assert issubclass(NIDaqBackendError, NIDaqError)
 
 
@@ -59,10 +61,16 @@ class _FakeTask:
     in_stream = object()
 
 
-def test_read_block_wraps_timeout_with_cause(monkeypatch: pytest.MonkeyPatch) -> None:
-    """NI's -200284 timeout code surfaces as :class:`NIDaqTimeoutError`."""
+def test_read_block_wraps_samples_not_yet_available_as_transient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NI's -200284 (``SamplesNotYetAvailable``) surfaces as :class:`NIDaqTransientError`.
+
+    Previously this code routed through :class:`NIDaqTimeoutError`; the new
+    classification reflects its real meaning ("samples still arriving, retry").
+    """
     backend = NidaqmxBackend()
-    fake_exc = _FakeNiDaqError("timed out", error_code=-200284)
+    fake_exc = _FakeNiDaqError("samples not yet available", error_code=-200284)
 
     class _StubReader:
         def __init__(self, _stream: object) -> None:
@@ -76,14 +84,42 @@ def test_read_block_wraps_timeout_with_cause(monkeypatch: pytest.MonkeyPatch) ->
         _StubReader,
     )
 
-    with pytest.raises(NIDaqTimeoutError) as exc_info:
+    with pytest.raises(NIDaqTransientError) as exc_info:
         backend.read_block(_FakeTask(), samples_per_channel=10, timeout=0.1)
 
     raised = exc_info.value
     assert raised.__cause__ is fake_exc
     assert raised.context.task_name == "ai_test"
-    assert raised.context.operation == "read_block"
+    assert raised.context.command_name == "read_block"
     assert raised.context.ni_error_code == -200284
+    # -200284 must NOT also be classified as NIDaqTimeoutError (one classifier per code).
+    assert not isinstance(raised, NIDaqTimeoutError)
+
+
+def test_read_block_wraps_buffer_overrun_as_transient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NI's -200279 (buffer overrun) is also retry-safe → :class:`NIDaqTransientError`."""
+    backend = NidaqmxBackend()
+    fake_exc = _FakeNiDaqError("buffer overrun", error_code=-200279)
+
+    class _StubReader:
+        def __init__(self, _stream: object) -> None:
+            pass
+
+        def read_many_sample(self, *_args: object, **_kwargs: object) -> None:
+            raise fake_exc
+
+    monkeypatch.setattr(
+        "nidaqmx.stream_readers.AnalogMultiChannelReader",
+        _StubReader,
+    )
+
+    with pytest.raises(NIDaqTransientError) as exc_info:
+        backend.read_block(_FakeTask(), samples_per_channel=10, timeout=0.1)
+
+    raised = exc_info.value
+    assert raised.context.ni_error_code == -200279
 
 
 def test_read_block_wraps_generic_error_with_cause(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,4 +145,4 @@ def test_read_block_wraps_generic_error_with_cause(monkeypatch: pytest.MonkeyPat
     raised = exc_info.value
     assert raised.__cause__ is fake_exc
     assert raised.context.ni_error_code == -1
-    assert raised.context.operation == "read_block"
+    assert raised.context.command_name == "read_block"

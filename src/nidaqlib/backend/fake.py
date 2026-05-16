@@ -145,7 +145,7 @@ class FakeDaqBackend:
         if name in self._tasks:
             raise NIDaqBackendError(
                 f"task {name!r} already exists",
-                context=ErrorContext(task_name=name, operation="create_task"),
+                context=ErrorContext(task_name=name, command_name="create_task"),
             )
         task = _FakeTask(name=name)
         self._tasks[name] = task
@@ -216,7 +216,7 @@ class FakeDaqBackend:
                 raise err
             raise NIDaqReadError(
                 f"scripted read error: {err!r}",
-                context=ErrorContext(task_name=task.name, operation="read_block"),
+                context=ErrorContext(task_name=task.name, command_name="read_block"),
             ) from err
         scripted = self._blocks.get(task.name)
         if scripted:
@@ -233,7 +233,7 @@ class FakeDaqBackend:
         else:
             raise NIDaqReadError(
                 f"no scripted blocks remain for task {task.name!r}",
-                context=ErrorContext(task_name=task.name, operation="read_block"),
+                context=ErrorContext(task_name=task.name, command_name="read_block"),
             )
         if block.shape[1] != samples_per_channel:
             # Reshape on the fly for tests that pre-build a long stream and
@@ -271,14 +271,14 @@ class FakeDaqBackend:
         if not output_channels:
             raise NIDaqConfigurationError(
                 "task has no writable channels (AO or DO)",
-                context=ErrorContext(task_name=task.name, operation="write"),
+                context=ErrorContext(task_name=task.name, command_name="write"),
             )
         names = [ch.display_name for ch in output_channels]
         missing = [n for n in names if n not in values]
         if missing:
             raise NIDaqConfigurationError(
                 f"write missing values for channel(s): {missing!r}",
-                context=ErrorContext(task_name=task.name, operation="write"),
+                context=ErrorContext(task_name=task.name, command_name="write"),
             )
 
         errs = self._write_errors.get(task.name)
@@ -289,7 +289,7 @@ class FakeDaqBackend:
                 raise err
             raise NIDaqWriteError(
                 f"scripted write error: {err!r}",
-                context=ErrorContext(task_name=task.name, operation="write"),
+                context=ErrorContext(task_name=task.name, command_name="write"),
             ) from err
 
         snapshot: dict[str, float | bool] = {n: values[n] for n in names}
@@ -323,12 +323,12 @@ class FakeDaqBackend:
                 f"task {task.name!r} is already started; "
                 "register_every_n_samples must run before start_task "
                 "(NI rejects post-start registration with -200960)",
-                context=ErrorContext(task_name=task.name, operation="register_every_n_samples"),
+                context=ErrorContext(task_name=task.name, command_name="register_every_n_samples"),
             )
         if task.callback is not None:
             raise NIDaqBackendError(
                 f"task {task.name!r} already has a buffer-event callback",
-                context=ErrorContext(task_name=task.name, operation="register_every_n_samples"),
+                context=ErrorContext(task_name=task.name, command_name="register_every_n_samples"),
             )
         task.callback = callback
         task.callback_n = n
@@ -354,7 +354,9 @@ class FakeDaqBackend:
                 f"task {task.name!r} is still running; "
                 "unregister_every_n_samples must run after stop_task "
                 "(NI rejects post-running unregister with -200986)",
-                context=ErrorContext(task_name=task.name, operation="unregister_every_n_samples"),
+                context=ErrorContext(
+                    task_name=task.name, command_name="unregister_every_n_samples"
+                ),
             )
         task.callback = None
         task.callback_n = 0

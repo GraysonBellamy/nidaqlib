@@ -1,13 +1,13 @@
 """Typed exception hierarchy for :mod:`nidaqlib`.
 
 Every library exception inherits from :class:`NIDaqError` and carries a
-structured :class:`ErrorContext` describing the failing operation. See design
-doc §16.
+structured :class:`ErrorContext` describing the failing operation.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields, replace
+from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Self
 
@@ -22,24 +22,52 @@ def _empty_extra() -> Mapping[str, Any]:
     return _EMPTY_EXTRA
 
 
+class ProtocolKind(StrEnum):
+    """Wire protocol kind for cross-library :class:`ErrorContext` symmetry.
+
+    Has no members because NI DAQmx is not a wire-protocol library — every
+    NI error context carries ``protocol=None``. The type exists for shape
+    parity with sibling libs (``alicatlib``, ``sartoriuslib``, ``watlowlib``)
+    whose ``ProtocolKind`` enums name real serial / MODBUS / RS-485
+    variants.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ErrorContext:
     """Structured context attached to every :class:`NIDaqError`.
 
-    Fields are best-effort — missing data is ``None`` rather than raising. The
-    DAQ-specific keys (``task_name``, ``physical_channel``, ``ni_error_code``)
-    let cross-instrument log readers join NIDaq exceptions to the same task /
-    channel / error-code identifiers visible from raw ``nidaqmx-python``.
+    Base fields are shared across the sibling libraries so cross-instrument
+    log readers can join exceptions on a common shape. NI extras
+    (``task_name``, ``physical_channel``, ``ni_error_code``) sit alongside.
 
     ``extra`` accepts any ``Mapping`` and is always frozen into a read-only
     :class:`types.MappingProxyType` at construction so the shared empty
     sentinel can never be mutated through ``error.context.extra[k] = v``.
+
+    Base fields (shape-shared with sibling libs):
+        port: NI device name (``Dev1``, ``cDAQ1Mod3``), or ``None``.
+        address: Always ``None`` for NI (no multi-drop address concept).
+        command_name: Logical operation name (``"read"``, ``"start"``,
+            ``"configure_timing"``, ...). The unified name; sibling libs
+            also call this ``command_name``.
+        protocol: Always ``None`` for NI (no wire protocol).
+        extra: Free-form additional context.
+
+    NI extras:
+        task_name: ``TaskSpec.name`` of the task at fault.
+        channel_name: Display name of the at-fault channel (optional).
+        physical_channel: NI physical-channel string (e.g. ``Dev1/ai0``).
+        ni_error_code: NI DAQmx error code, when known.
     """
 
+    port: str | None = None
+    address: str | int | None = None
+    command_name: str | None = None
+    protocol: ProtocolKind | None = None
     task_name: str | None = None
     channel_name: str | None = None
     physical_channel: str | None = None
-    operation: str | None = None
     ni_error_code: int | None = None
     extra: Mapping[str, Any] = field(default_factory=_empty_extra)
 
@@ -116,14 +144,16 @@ class NIDaqError(Exception):
         base = super().__str__()
         ctx = self.context
         bits: list[str] = []
+        if ctx.port is not None:
+            bits.append(f"port={ctx.port}")
         if ctx.task_name is not None:
             bits.append(f"task={ctx.task_name}")
         if ctx.channel_name is not None:
             bits.append(f"channel={ctx.channel_name}")
         if ctx.physical_channel is not None:
             bits.append(f"physical={ctx.physical_channel}")
-        if ctx.operation is not None:
-            bits.append(f"op={ctx.operation}")
+        if ctx.command_name is not None:
+            bits.append(f"cmd={ctx.command_name}")
         if ctx.ni_error_code is not None:
             bits.append(f"ni_error_code={ctx.ni_error_code}")
         if ctx.extra:
@@ -180,7 +210,23 @@ class NIDaqWriteError(NIDaqError):
 
 
 class NIDaqTimeoutError(NIDaqError):
-    """An NI read or write exceeded its configured timeout."""
+    """An NI read or write exceeded its configured timeout.
+
+    Distinct from :class:`NIDaqTransientError`: this is a hard timeout that
+    means the operation gave up. Transient errors mean "retry safe."
+    """
+
+
+class NIDaqTransientError(NIDaqError):
+    """A driver-layer error that is safe to retry without rebuilding the task.
+
+    Surfaced by the backend when an NI DAQmx call fails with a code in the
+    documented "retry-safe" set (see
+    :data:`nidaqlib.backend.nidaqmx_backend._TRANSIENT_NI_CODES`). Common
+    examples: buffer-overrun under ``ErrorPolicy.RETURN`` and the
+    "samples still arriving" code that NI returns when a read window slid
+    just ahead of the producer.
+    """
 
 
 class NIDaqConnectionError(NIDaqError):

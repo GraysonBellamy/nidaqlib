@@ -54,30 +54,44 @@ from nidaqlib.errors import (
     NIDaqSinkWriteError,
     NIDaqTaskStateError,
     NIDaqTimeoutError,
+    NIDaqTransientError,
     NIDaqValidationError,
     NIDaqWriteError,
+    ProtocolKind,
 )
 from nidaqlib.manager import DaqManager, DeviceResult
+from nidaqlib.sinks.base import block_to_rows, reading_to_row
 from nidaqlib.streaming import (
     AcquisitionSummary,
     ErrorPolicy,
     OverflowPolicy,
+    PollSource,
+    PollSourceAdapter,
+    Recording,
     record,
     record_polled,
+)
+from nidaqlib.system import (
+    DeviceInfo,
+    DiscoveryResult,
+    NIDaqDiscoveryResult,
+    find_devices,
 )
 from nidaqlib.tasks import (
     AcquisitionMode,
     DaqBlock,
     DaqReading,
     DaqSession,
+    DeviceSnapshot,
     Edge,
+    NIDaqSnapshot,
     TaskBuilder,
     TaskSpec,
+    TaskState,
     Timing,
     open_device,
 )
 from nidaqlib.tasks.metadata import RunMetadata, read_sidecar, sidecar_path_for, write_sidecar
-from nidaqlib.tasks.models import DaqSample
 from nidaqlib.tasks.spec import TdmsLogging
 from nidaqlib.tasks.triggers import (
     AnalogEdgeStartTrigger,
@@ -86,6 +100,7 @@ from nidaqlib.tasks.triggers import (
     DigitalEdgeStartTrigger,
     TriggerSpec,
 )
+from nidaqlib.units import to_pint
 from nidaqlib.version import __version__
 
 __all__ = [
@@ -109,13 +124,15 @@ __all__ = [
     "DaqBlock",
     "DaqManager",
     "DaqReading",
-    "DaqSample",
     "DaqSession",
+    "DeviceInfo",
     "DeviceResult",
+    "DeviceSnapshot",
     "DigitalEdgeReferenceTrigger",
     "DigitalEdgeStartTrigger",
     "DigitalInput",
     "DigitalOutput",
+    "DiscoveryResult",
     "Edge",
     "ErrorContext",
     "ErrorPolicy",
@@ -126,6 +143,7 @@ __all__ = [
     "NIDaqConfirmationRequiredError",
     "NIDaqConnectionError",
     "NIDaqDependencyError",
+    "NIDaqDiscoveryResult",
     "NIDaqError",
     "NIDaqReadError",
     "NIDaqResourceError",
@@ -133,15 +151,22 @@ __all__ = [
     "NIDaqSinkError",
     "NIDaqSinkSchemaError",
     "NIDaqSinkWriteError",
+    "NIDaqSnapshot",
     "NIDaqTaskStateError",
     "NIDaqTimeoutError",
+    "NIDaqTransientError",
     "NIDaqValidationError",
     "NIDaqWriteError",
     "NidaqConfig",
     "OverflowPolicy",
+    "PollSource",
+    "PollSourceAdapter",
+    "ProtocolKind",
+    "Recording",
     "RunMetadata",
     "TaskBuilder",
     "TaskSpec",
+    "TaskState",
     "TdmsLogging",
     "TemperatureUnits",
     "TerminalConfiguration",
@@ -150,11 +175,15 @@ __all__ = [
     "Timing",
     "TriggerSpec",
     "__version__",
+    "block_to_rows",
     "config_from_env",
+    "find_devices",
     "open_device",
     "read_sidecar",
+    "reading_to_row",
     "record",
     "record_polled",
     "sidecar_path_for",
+    "to_pint",
     "write_sidecar",
 ]

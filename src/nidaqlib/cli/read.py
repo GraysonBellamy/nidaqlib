@@ -146,15 +146,15 @@ def _format_reading(reading: DaqReading, *, as_json: bool) -> str:
         payload = {
             "device": reading.device,
             "task": reading.task,
-            "midpoint_at": reading.midpoint_at.isoformat(),
-            "monotonic_ns": reading.monotonic_ns,
+            "t_utc": reading.t_utc.isoformat(),
+            "t_mono_ns": reading.t_mono_ns,
             "latency_s": reading.latency_s,
             "values": dict(reading.values),
             "units": dict(reading.units),
         }
         return json.dumps(payload)
     parts = [f"{ch}={value!r}" for ch, value in reading.values.items()]
-    return f"{reading.midpoint_at.isoformat()}  " + "  ".join(parts)
+    return f"{reading.t_utc.isoformat()}  " + "  ".join(parts)
 
 
 async def _one_shot(args: argparse.Namespace) -> int:
@@ -173,9 +173,9 @@ async def _streamed(args: argparse.Namespace) -> int:
     deadline = anyio.current_time() + args.duration
     async with (
         await open_device(spec) as session,
-        record_polled(session, rate_hz=args.rate, buffer_size=32) as (rx, _summary),
+        record_polled(session, rate_hz=args.rate, buffer_size=32) as recording,
     ):
-        async for payload in rx:
+        async for payload in recording.stream:
             # Session-mode record_polled emits DaqReading. The Union return-shape
             # comes from the manager-mode overload, which we don't take here.
             reading = cast("DaqReading", payload)

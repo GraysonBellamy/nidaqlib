@@ -1,22 +1,22 @@
-"""Tests for the sink family (design doc §14.1).
+"""Tests for the sink family.
 
 Covers:
 
-- ``InMemorySink`` accepts all three shapes.
+- ``InMemorySink`` accepts readings and blocks.
 - ``CsvSink`` / ``JsonlSink`` refuse :class:`DaqBlock` by default;
   ``accept_blocks=True`` opts into per-(channel, sample) rows.
-- ``SqliteSink`` writes readings, samples, and block summary rows into
-  three different tables.
+- ``SqliteSink`` writes readings and block summary rows into separate
+  tables.
 - ``ParquetSink`` writes a long-format table whose ``block_index`` /
-  ``sample_index`` columns reconstruct sample timestamps via §8.7.
+  ``sample_index`` columns reconstruct sample timestamps via
+  ``block_period_ns``.
 - ``pipe`` and ``pipe_blocks`` happy-path drivers.
-- ``block_to_long_rows`` per-(channel, sample) fan-out.
+- ``block_to_rows`` per-(channel, sample) fan-out.
 """
 
 from __future__ import annotations
 
 import json
-import math
 import sqlite3
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, cast
@@ -24,14 +24,13 @@ from typing import TYPE_CHECKING, Protocol, cast
 import numpy as np
 import pytest
 
-from nidaqlib import DaqBlock, DaqReading, NIDaqSinkSchemaError
+from nidaqlib import DaqBlock, DaqReading, NIDaqSinkSchemaError, block_to_rows
 from nidaqlib.sinks import (
     CsvSink,
     InMemorySink,
     JsonlSink,
     ParquetSink,
     SqliteSink,
-    block_to_long_rows,
     pipe,
     pipe_blocks,
 )
@@ -81,10 +80,11 @@ def _reading() -> DaqReading:
         task="dev1",
         values={"ai0": 1.5},
         units={"ai0": "V"},
+        t_mono_ns=10,
+        t_utc=now,
+        t_midpoint_mono_ns=None,
         requested_at=now,
         received_at=now,
-        midpoint_at=now,
-        monotonic_ns=10,
         latency_s=0.001,
     )
 
@@ -92,6 +92,8 @@ def _reading() -> DaqReading:
 def _block(*, block_index: int = 0, first_sample_index: int = 0) -> DaqBlock:
     now = datetime.now(UTC)
     rate_hz = 1000.0
+    block_period_ns = int(1e9 / rate_hz)
+    samples_per_channel = 3
     return DaqBlock(
         device="dev1",
         task="dev1",
@@ -105,12 +107,13 @@ def _block(*, block_index: int = 0, first_sample_index: int = 0) -> DaqBlock:
         ),
         block_index=block_index,
         first_sample_index=first_sample_index,
-        samples_per_channel=3,
-        sample_rate_hz=rate_hz,
-        dt_s=1.0 / rate_hz,
+        samples_per_channel=samples_per_channel,
+        block_period_ns=block_period_ns,
+        t_mono_ns=20,
+        t_utc=now,
+        t_midpoint_mono_ns=20 + block_period_ns * (samples_per_channel - 1) // 2,
         task_started_at=now,
         t0=now,
-        monotonic_ns=20,
         read_started_at=now,
         read_finished_at=now,
         elapsed_s=0.001,
@@ -133,20 +136,20 @@ async def test_in_memory_collects_all_shapes() -> None:
 
 
 # ---------------------------------------------------------------------------
-# block_to_long_rows
+# block_to_rows
 # ---------------------------------------------------------------------------
 
 
-def test_block_to_long_rows_count_and_indices() -> None:
+def test_block_to_rows_count_and_indices() -> None:
     block = _block()
-    samples = list(block_to_long_rows(block))
-    assert len(samples) == 2 * 3  # n_channels * samples_per_channel
+    rows = block_to_rows(block)
+    assert len(rows) == 2 * 3  # n_channels * samples_per_channel
     # Channels grouped together, samples in order within each channel.
-    assert samples[0].channel == "ai0"
-    assert samples[3].channel == "ai1"
-    # Reconstructed timestamps advance by dt_s.
-    delta = (samples[1].acquired_at - samples[0].acquired_at).total_seconds()
-    assert math.isclose(delta, 1.0 / 1000.0)
+    assert rows[0]["channel"] == "ai0"
+    assert rows[3]["channel"] == "ai1"
+    # Reconstructed monotonic timestamps advance by block_period_ns.
+    ai0_mono = [r["t_mono_ns"] for r in rows if r["channel"] == "ai0"]
+    assert cast("int", ai0_mono[1]) - cast("int", ai0_mono[0]) == block.block_period_ns
 
 
 # ---------------------------------------------------------------------------
@@ -234,10 +237,11 @@ async def test_sqlite_quotes_channel_derived_columns(tmp_path: Path) -> None:
         task="dev1",
         values={'bad"column': 1.0},
         units={'bad"column': "V"},
+        t_mono_ns=10,
+        t_utc=now,
+        t_midpoint_mono_ns=None,
         requested_at=now,
         received_at=now,
-        midpoint_at=now,
-        monotonic_ns=10,
         latency_s=0.001,
     )
     out = tmp_path / "quoted.sqlite"
@@ -258,7 +262,7 @@ async def test_sqlite_quotes_channel_derived_columns(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_parquet_block_round_trip_reconstructs_timestamps(tmp_path: Path) -> None:
-    """5 blocks → block_index/first_sample_index monotonic, time_s ladders."""
+    """5 blocks → block_index/sample_index monotonic, t_mono_ns ladders."""
     out = tmp_path / "out.parquet"
     blocks = [_block(block_index=i, first_sample_index=i * 3) for i in range(5)]
     async with ParquetSink(out) as sink:
@@ -268,22 +272,10 @@ async def test_parquet_block_round_trip_reconstructs_timestamps(tmp_path: Path) 
     # 5 blocks * 2 channels * 3 samples = 30 rows.
     assert table.num_rows == 30
     columns = table.column_names
-    assert {"block_index", "sample_index", "time_s", "channel", "value"} <= set(columns)
+    assert {"block_index", "sample_index", "t_mono_ns", "channel", "value"} <= set(columns)
 
     block_indices = cast("list[int]", table.column("block_index").to_pylist())
     assert sorted(set(block_indices)) == [0, 1, 2, 3, 4]
-
-    # Pull ai0 rows out and verify sample_index / time_s ladder.
-    from itertools import pairwise
-
-    channels = cast("list[str]", table.column("channel").to_pylist())
-    sample_indices = cast("list[int]", table.column("sample_index").to_pylist())
-    times = cast("list[float]", table.column("time_s").to_pylist())
-    rows = list(zip(channels, sample_indices, times, strict=True))
-    ai0_rows = sorted((s, t) for ch, s, t in rows if ch == "ai0")
-    assert [s for s, _ in ai0_rows] == list(range(15))
-    deltas = [b - a for (_, a), (_, b) in pairwise(ai0_rows)]
-    assert all(abs(d - 0.001) < 1e-9 for d in deltas)
 
 
 @pytest.mark.anyio

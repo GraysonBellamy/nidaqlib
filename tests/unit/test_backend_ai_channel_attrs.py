@@ -216,4 +216,4 @@ def test_unsupported_attribute_wraps_as_backend_error() -> None:
 
     raised = exc_info.value
     assert raised.context.ni_error_code == -200077
-    assert raised.context.operation == "add_channel"
+    assert raised.context.command_name == "add_channel"

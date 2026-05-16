@@ -1,12 +1,13 @@
 """Sync wrappers for :func:`record` and :func:`record_polled`.
 
-Each wrapper owns its own :class:`SyncPortal` and yields a sync iterator
-of :class:`DaqBlock` (or :class:`DaqReading`) records.
+Each wrapper owns its own :class:`SyncPortal` and yields a sync
+:class:`Recording[T]` whose ``stream`` is a sync iterator of records.
 """
 
 from __future__ import annotations
 
 import contextlib
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from nidaqlib.streaming import (
@@ -29,7 +30,27 @@ if TYPE_CHECKING:
     from nidaqlib.tasks.models import DaqBlock, DaqReading
 
 
-__all__ = ["AcquisitionSummary", "ErrorPolicy", "OverflowPolicy", "record", "record_polled"]
+__all__ = [
+    "AcquisitionSummary",
+    "ErrorPolicy",
+    "OverflowPolicy",
+    "SyncRecording",
+    "record",
+    "record_polled",
+]
+
+
+@dataclass(slots=True)
+class SyncRecording[T]:
+    """Sync mirror of :class:`nidaqlib.streaming.Recording`.
+
+    The ``stream`` here is a :class:`SyncAsyncIterator` (iterate with a
+    plain ``for`` loop); the rest of the shape matches the async wrapper.
+    """
+
+    stream: SyncAsyncIterator[T]
+    summary: AcquisitionSummary
+    rate_hz: float | None
 
 
 @contextlib.contextmanager  # pyright: ignore[reportDeprecated]
@@ -42,19 +63,19 @@ def record(
     error_policy: ErrorPolicy = ErrorPolicy.RAISE,
     overflow: OverflowPolicy = OverflowPolicy.DROP_OLDEST,
     use_callback_bridge: bool = False,
-) -> Iterator[tuple[SyncAsyncIterator[DaqBlock], AcquisitionSummary]]:
+) -> Iterator[SyncRecording[DaqBlock]]:
     """Sync wrapper around :func:`nidaqlib.streaming.record`.
 
-    Yields ``(stream, summary)``. The stream is a sync iterator producing
-    :class:`DaqBlock` records; iterate it with a normal ``for`` loop.
+    Yields a :class:`SyncRecording[DaqBlock]`. Iterate ``recording.stream``
+    with a normal ``for`` loop.
 
     Example::
 
         with (
             Daq.open_device(spec) as session,
-            record(session, chunk_size=1000) as (stream, summary),
+            record(session, chunk_size=1000) as recording,
         ):
-            for block in stream:
+            for block in recording.stream:
                 process(block)
     """
     with SyncPortal() as portal:
@@ -67,10 +88,14 @@ def record(
             overflow=overflow,
             use_callback_bridge=use_callback_bridge,
         )
-        with portal.wrap_async_context_manager(acm) as (rx, summary):
-            sync_iter = portal.wrap_async_iter(rx)
+        with portal.wrap_async_context_manager(acm) as recording:
+            sync_iter = portal.wrap_async_iter(recording.stream)
             try:
-                yield sync_iter, summary
+                yield SyncRecording(
+                    stream=sync_iter,
+                    summary=recording.summary,
+                    rate_hz=recording.rate_hz,
+                )
             finally:
                 sync_iter.close()
 
@@ -83,7 +108,7 @@ def record_polled(
     error_policy: ErrorPolicy = ErrorPolicy.RAISE,
     overflow: OverflowPolicy = OverflowPolicy.BLOCK,
     buffer_size: int = 64,
-) -> Iterator[tuple[SyncAsyncIterator[DaqReading], AcquisitionSummary]]:
+) -> Iterator[SyncRecording[DaqReading]]:
     """Sync wrapper around :func:`nidaqlib.streaming.record_polled`.
 
     The sync facade only accepts a session source — the manager-mode
@@ -98,11 +123,18 @@ def record_polled(
             overflow=overflow,
             buffer_size=buffer_size,
         )
-        with portal.wrap_async_context_manager(acm) as (rx, summary):
+        with portal.wrap_async_context_manager(acm) as recording:
             # The session-source overload always emits DaqReading; the
             # async-side Union is widened only for manager-mode.
-            reading_rx = cast("SyncAsyncIterator[DaqReading]", portal.wrap_async_iter(rx))
+            reading_rx = cast(
+                "SyncAsyncIterator[DaqReading]",
+                portal.wrap_async_iter(recording.stream),
+            )
             try:
-                yield reading_rx, summary
+                yield SyncRecording(
+                    stream=reading_rx,
+                    summary=recording.summary,
+                    rate_hz=recording.rate_hz,
+                )
             finally:
                 reading_rx.close()

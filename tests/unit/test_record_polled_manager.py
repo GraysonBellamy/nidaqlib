@@ -37,7 +37,8 @@ async def test_manager_fanout_emits_per_task_mappings() -> None:
         await mgr.add("a", _spec("a", "Dev1/ai0"), backend=backend)
         await mgr.add("b", _spec("b", "Dev1/ai1"), backend=backend)
         await mgr.start()
-        async with record_polled(mgr, rate_hz=50.0, buffer_size=8) as (rx, _summary):
+        async with record_polled(mgr, rate_hz=50.0, buffer_size=8) as _rec:
+            rx, _summary = _rec.stream, _rec.summary
             seen: list[dict[str, DeviceResult[DaqReading]]] = []
             async for payload in rx:
                 # Manager mode payload is a Mapping[str, DeviceResult[DaqReading]].

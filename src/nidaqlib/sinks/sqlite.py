@@ -1,10 +1,9 @@
 """SQLite sink — stdlib :mod:`sqlite3` + WAL, parameterised ``executemany``.
 
-Accepts :class:`DaqReading` and :class:`DaqSample` via :meth:`write_many`,
-and :class:`DaqBlock` via :meth:`write` — one row per block (summary, no
-scalarisation, design doc §14 table). Different shapes go to different
-tables: ``readings`` / ``samples`` / ``blocks`` by default. Override via
-the ``table_*`` arguments.
+Accepts :class:`DaqReading` via :meth:`write_many` and :class:`DaqBlock`
+via :meth:`write` — one row per block (summary, no scalarisation).
+Readings and block summaries go to separate tables: ``readings`` /
+``blocks`` by default. Override via the ``table_*`` arguments.
 
 The ``sqlite3`` driver is synchronous; calls go through
 :func:`anyio.to_thread.run_sync` so the event loop stays responsive.
@@ -30,13 +29,13 @@ from anyio.to_thread import run_sync
 from nidaqlib._logging import get_logger
 from nidaqlib.errors import NIDaqSinkWriteError
 from nidaqlib.sinks._schema import ColumnSpec, SchemaLock
-from nidaqlib.sinks.base import reading_to_row, sample_to_row
+from nidaqlib.sinks.base import reading_to_row
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from types import TracebackType
 
-    from nidaqlib.tasks.models import DaqBlock, DaqReading, DaqSample
+    from nidaqlib.tasks.models import DaqBlock, DaqReading
 
 
 __all__ = ["SqliteSink"]
@@ -80,10 +79,10 @@ def _block_summary_row(block: DaqBlock) -> dict[str, float | int | str | bool | 
 
     No scalarisation — one row per block. Carries the block-level provenance
     fields (``block_index``, ``first_sample_index``, ``samples_per_channel``,
-    ``sample_rate_hz``, ``task_started_at``, ``t0``, etc.) plus the raw
+    ``block_period_ns``, ``task_started_at``, ``t0``, etc.) plus the raw
     channel list and units. The ``data`` array is intentionally **not**
     serialised; consumers who need samples should use :class:`ParquetSink`
-    or scalarise explicitly via :func:`block_to_long_rows`.
+    or scalarise explicitly via :func:`block_to_rows`.
     """
     return {
         "device": block.device,
@@ -92,11 +91,13 @@ def _block_summary_row(block: DaqBlock) -> dict[str, float | int | str | bool | 
         "block_index": block.block_index,
         "first_sample_index": block.first_sample_index,
         "samples_per_channel": block.samples_per_channel,
+        "block_period_ns": block.block_period_ns,
         "sample_rate_hz": block.sample_rate_hz,
-        "dt_s": block.dt_s,
         "task_started_at": block.task_started_at.isoformat(),
         "t0": block.t0.isoformat(),
-        "monotonic_ns": block.monotonic_ns,
+        "t_mono_ns": block.t_mono_ns,
+        "t_utc": block.t_utc.isoformat(),
+        "t_midpoint_mono_ns": block.t_midpoint_mono_ns,
         "read_started_at": block.read_started_at.isoformat(),
         "read_finished_at": block.read_finished_at.isoformat(),
         "elapsed_s": block.elapsed_s,
@@ -112,15 +113,14 @@ def _block_summary_row(block: DaqBlock) -> dict[str, float | int | str | bool | 
 class SqliteSink:
     """Append-only SQLite writer with WAL journaling and per-table schema lock.
 
-    One sink instance routes records to up to three tables, one per shape
-    (readings / samples / blocks). Each table's column set is locked on its
-    first write; later writes project onto the locked schema and drop
-    unknown columns with a one-shot WARN.
+    One sink instance routes records to up to two tables, one per shape
+    (readings / blocks). Each table's column set is locked on its first
+    write; later writes project onto the locked schema and drop unknown
+    columns with a one-shot WARN.
 
     Args:
         path: Destination SQLite file.
         table_readings: Table name for :class:`DaqReading` rows.
-        table_samples: Table name for :class:`DaqSample` rows.
         table_blocks: Table name for :class:`DaqBlock` summary rows.
         journal_mode: SQLite journal mode pragma. ``WAL`` is recommended.
         synchronous: SQLite ``synchronous`` pragma. ``NORMAL`` balances
@@ -133,7 +133,6 @@ class SqliteSink:
         path: str | Path,
         *,
         table_readings: str = "readings",
-        table_samples: str = "samples",
         table_blocks: str = "blocks",
         journal_mode: _JournalMode = "WAL",
         synchronous: _Synchronous = "NORMAL",
@@ -141,7 +140,6 @@ class SqliteSink:
     ) -> None:
         self._path = Path(path)
         self._table_readings = _validate_identifier(table_readings, label="table_readings")
-        self._table_samples = _validate_identifier(table_samples, label="table_samples")
         self._table_blocks = _validate_identifier(table_blocks, label="table_blocks")
         self._journal_mode: _JournalMode = journal_mode
         self._synchronous: _Synchronous = synchronous
@@ -149,13 +147,9 @@ class SqliteSink:
             raise ValueError(f"busy_timeout_ms must be >= 0, got {busy_timeout_ms!r}")
         self._busy_timeout_ms = busy_timeout_ms
         self._conn: sqlite3.Connection | None = None
-        # Per-table schema state. One :class:`SchemaLock` per table because
-        # each carries a different row shape (readings / samples / blocks).
         self._lock_readings = SchemaLock(sink_name="sqlite.readings", logger=_logger)
-        self._lock_samples = SchemaLock(sink_name="sqlite.samples", logger=_logger)
         self._lock_blocks = SchemaLock(sink_name="sqlite.blocks", logger=_logger)
         self._insert_readings: str | None = None
-        self._insert_samples: str | None = None
         self._insert_blocks: str | None = None
 
     @property
@@ -185,33 +179,16 @@ class SqliteSink:
         conn.execute(f"PRAGMA busy_timeout = {int(self._busy_timeout_ms)}")
         return conn
 
-    async def write_many(
-        self,
-        items: Sequence[DaqReading] | Sequence[DaqSample],
-    ) -> None:
-        """Append :class:`DaqReading` or :class:`DaqSample` rows."""
+    async def write_many(self, items: Sequence[DaqReading]) -> None:
+        """Append :class:`DaqReading` rows."""
         if self._conn is None:
             raise RuntimeError("SqliteSink: write_many called before open()")
         if not items:
             return
-
-        from nidaqlib.tasks.models import DaqReading, DaqSample  # noqa: PLC0415
-
-        first = items[0]
-        if isinstance(first, DaqReading):
-            rows = [reading_to_row(r) for r in items]  # type: ignore[arg-type]
-            await self._insert_rows(
-                rows, table=self._table_readings, lock=self._lock_readings, kind="readings"
-            )
-        elif isinstance(first, DaqSample):  # pyright: ignore[reportUnnecessaryIsInstance]
-            rows = [sample_to_row(s) for s in items]  # type: ignore[arg-type]
-            await self._insert_rows(
-                rows, table=self._table_samples, lock=self._lock_samples, kind="samples"
-            )
-        else:  # pragma: no cover - defensive
-            raise NIDaqSinkWriteError(
-                f"SqliteSink.write_many: unsupported record type {type(first).__name__}"
-            )
+        rows = [reading_to_row(r) for r in items]
+        await self._insert_rows(
+            rows, table=self._table_readings, lock=self._lock_readings, kind="readings"
+        )
 
     async def write(self, block: DaqBlock) -> None:
         """Append one :class:`DaqBlock` as a summary row."""
@@ -251,16 +228,12 @@ class SqliteSink:
     def _set_insert_sql(self, kind: str, sql: str) -> None:
         if kind == "readings":
             self._insert_readings = sql
-        elif kind == "samples":
-            self._insert_samples = sql
         else:
             self._insert_blocks = sql
 
     def _get_insert_sql(self, kind: str) -> str | None:
         if kind == "readings":
             return self._insert_readings
-        if kind == "samples":
-            return self._insert_samples
         return self._insert_blocks
 
     def _build_insert_sql(self, table: str, lock: SchemaLock) -> str:

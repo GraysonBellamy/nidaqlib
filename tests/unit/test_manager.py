@@ -167,7 +167,8 @@ async def test_start_and_read_block_fanout() -> None:
             assert result.ok is True
             assert result.value is not None
             assert result.value.samples_per_channel == 32
-            assert result.name == name
+            # Mapping key carries the task name; DeviceResult no longer does.
+            assert name in {"a", "b"}
 
 
 @pytest.mark.anyio

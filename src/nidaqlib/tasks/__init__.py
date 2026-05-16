@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from nidaqlib.tasks.builder import TaskBuilder
-from nidaqlib.tasks.models import DaqBlock, DaqReading
+from nidaqlib.tasks.models import (
+    DaqBlock,
+    DaqReading,
+    DeviceSnapshot,
+    NIDaqSnapshot,
+    TaskState,
+)
 from nidaqlib.tasks.session import DaqSession
 from nidaqlib.tasks.spec import AcquisitionMode, Edge, TaskSpec, Timing
 
@@ -90,9 +96,12 @@ __all__ = [
     "DaqBlock",
     "DaqReading",
     "DaqSession",
+    "DeviceSnapshot",
     "Edge",
+    "NIDaqSnapshot",
     "TaskBuilder",
     "TaskSpec",
+    "TaskState",
     "Timing",
     "open_device",
 ]

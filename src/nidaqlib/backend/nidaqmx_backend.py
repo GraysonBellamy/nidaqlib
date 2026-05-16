@@ -16,7 +16,7 @@ from nidaqlib.errors import (
     NIDaqConfigurationError,
     NIDaqDependencyError,
     NIDaqReadError,
-    NIDaqTimeoutError,
+    NIDaqTransientError,
     NIDaqWriteError,
 )
 
@@ -31,13 +31,18 @@ if TYPE_CHECKING:
     from nidaqlib.tasks.triggers import TriggerSpec
 
 
-_NI_TIMEOUT_ERROR_CODE: Final[int] = -200284
-"""``DAQmxErrorSamplesNotYetAvailable`` from ``nidaqmx.error_codes.DAQmxErrors``.
-
-Hard-coded so the wrapper's timeout-detection branch does not need to import
-NI's enum module — the error code is part of NI's stable C ABI and has not
-changed in years.
-"""
+# NI DAQmx error codes that the wrapper treats as retry-safe.
+#
+# Hard-coded so the classification path does not need to import
+# ``nidaqmx.error_codes.DAQmxErrors`` — these codes are part of NI's stable
+# C ABI and have not changed in years. Extend by PR as new transient codes
+# are observed in the field.
+_TRANSIENT_NI_CODES: Final[frozenset[int]] = frozenset(
+    {
+        -200279,  # buffer overrun (retry-safe under ErrorPolicy.RETURN)
+        -200284,  # ``SamplesNotYetAvailable`` — read window led the producer
+    }
+)
 
 
 def _import_nidaqmx() -> Any:
@@ -92,7 +97,7 @@ class NidaqmxBackend:
                 f"failed to create task {name!r}",
                 context=ErrorContext(
                     task_name=name,
-                    operation="create_task",
+                    command_name="create_task",
                     ni_error_code=getattr(exc, "error_code", None),
                 ),
             ) from exc
@@ -107,7 +112,7 @@ class NidaqmxBackend:
                 "failed to close task",
                 context=ErrorContext(
                     task_name=getattr(task, "name", None),
-                    operation="close_task",
+                    command_name="close_task",
                     ni_error_code=getattr(exc, "error_code", None),
                 ),
             ) from exc
@@ -172,7 +177,7 @@ class NidaqmxBackend:
                     context=ErrorContext(
                         task_name=getattr(task, "name", None),
                         physical_channel=spec.physical_channel,
-                        operation="add_channel",
+                        command_name="add_channel",
                     ),
                 )
         except nidaqmx.errors.DaqError as exc:
@@ -182,7 +187,7 @@ class NidaqmxBackend:
                     task_name=getattr(task, "name", None),
                     channel_name=spec.name,
                     physical_channel=spec.physical_channel,
-                    operation="add_channel",
+                    command_name="add_channel",
                     ni_error_code=getattr(exc, "error_code", None),
                 ),
             ) from exc
@@ -409,7 +414,7 @@ class NidaqmxBackend:
                 "failed to configure timing",
                 context=ErrorContext(
                     task_name=getattr(task, "name", None),
-                    operation="configure_timing",
+                    command_name="configure_timing",
                     ni_error_code=getattr(exc, "error_code", None),
                 ),
             ) from exc
@@ -435,7 +440,7 @@ class NidaqmxBackend:
                 "failed to configure TDMS logging",
                 context=ErrorContext(
                     task_name=getattr(task, "name", None),
-                    operation="configure_logging",
+                    command_name="configure_logging",
                     ni_error_code=getattr(exc, "error_code", None),
                 ),
             ) from exc
@@ -490,7 +495,7 @@ class NidaqmxBackend:
                     f"NidaqmxBackend does not support trigger kind {trigger.kind!r}",
                     context=ErrorContext(
                         task_name=getattr(task, "name", None),
-                        operation="configure_trigger",
+                        command_name="configure_trigger",
                     ),
                 )
         except nidaqmx.errors.DaqError as exc:
@@ -498,7 +503,7 @@ class NidaqmxBackend:
                 "failed to configure trigger",
                 context=ErrorContext(
                     task_name=getattr(task, "name", None),
-                    operation="configure_trigger",
+                    command_name="configure_trigger",
                     ni_error_code=getattr(exc, "error_code", None),
                 ),
             ) from exc
@@ -513,7 +518,7 @@ class NidaqmxBackend:
                 "failed to start task",
                 context=ErrorContext(
                     task_name=getattr(task, "name", None),
-                    operation="start_task",
+                    command_name="start_task",
                     ni_error_code=getattr(exc, "error_code", None),
                 ),
             ) from exc
@@ -528,7 +533,7 @@ class NidaqmxBackend:
                 "failed to stop task",
                 context=ErrorContext(
                     task_name=getattr(task, "name", None),
-                    operation="stop_task",
+                    command_name="stop_task",
                     ni_error_code=getattr(exc, "error_code", None),
                 ),
             ) from exc
@@ -547,7 +552,9 @@ class NidaqmxBackend:
         because clarity is worth a few microseconds of allocator pressure here.
 
         Raises:
-            NIDaqTimeoutError: ``timeout`` elapsed before samples were ready.
+            NIDaqTransientError: NI returned a retry-safe code (e.g.
+                ``-200284`` "samples not yet available", ``-200279`` buffer
+                overrun under ``ErrorPolicy.RETURN``).
             NIDaqReadError: NI returned any other read failure.
         """
         import numpy as np  # noqa: PLC0415
@@ -569,16 +576,15 @@ class NidaqmxBackend:
                 timeout=timeout,
             )
         except nidaqmx.errors.DaqError as exc:
+            ni_code = getattr(exc, "error_code", None)
             ctx = ErrorContext(
                 task_name=getattr(task, "name", None),
-                operation="read_block",
-                ni_error_code=getattr(exc, "error_code", None),
+                command_name="read_block",
+                ni_error_code=ni_code,
             )
-            # NI's timeout error code is DAQmxErrorSamplesNotYetAvailable;
-            # generic read failures land under NIDaqReadError.
-            if getattr(exc, "error_code", None) == _NI_TIMEOUT_ERROR_CODE:
-                raise NIDaqTimeoutError(
-                    f"read_block timed out after {timeout}s",
+            if ni_code in _TRANSIENT_NI_CODES:
+                raise NIDaqTransientError(
+                    f"read_block hit a retry-safe NI code ({ni_code})",
                     context=ctx,
                 ) from exc
             raise NIDaqReadError(
@@ -605,7 +611,7 @@ class NidaqmxBackend:
         Raises:
             NIDaqConfigurationError: Task mixes AO and DO, or the keys of
                 ``values`` don't cover the task's output channels.
-            NIDaqWriteError / NIDaqTimeoutError: Surfaced from the backend.
+            NIDaqWriteError / NIDaqTransientError: Surfaced from the backend.
         """
         import numpy as np  # noqa: PLC0415
 
@@ -623,7 +629,7 @@ class NidaqmxBackend:
                 "tasks mixing AO and DO are not supported by NidaqmxBackend.write",
                 context=ErrorContext(
                     task_name=getattr(task, "name", None),
-                    operation="write",
+                    command_name="write",
                 ),
             )
 
@@ -634,11 +640,11 @@ class NidaqmxBackend:
                 f"write missing values for channel(s): {missing!r}",
                 context=ErrorContext(
                     task_name=getattr(task, "name", None),
-                    operation="write",
+                    command_name="write",
                 ),
             )
 
-        ctx = ErrorContext(task_name=getattr(task, "name", None), operation="write")
+        ctx = ErrorContext(task_name=getattr(task, "name", None), command_name="write")
         try:
             if ao_count > 0:
                 from nidaqmx.stream_writers import AnalogMultiChannelWriter  # noqa: PLC0415
@@ -667,14 +673,15 @@ class NidaqmxBackend:
                 context=ctx,
             )
         except nidaqmx.errors.DaqError as exc:
+            ni_code = getattr(exc, "error_code", None)
             ni_ctx = ErrorContext(
                 task_name=getattr(task, "name", None),
-                operation="write",
-                ni_error_code=getattr(exc, "error_code", None),
+                command_name="write",
+                ni_error_code=ni_code,
             )
-            if getattr(exc, "error_code", None) == _NI_TIMEOUT_ERROR_CODE:
-                raise NIDaqTimeoutError(
-                    f"write timed out after {timeout}s",
+            if ni_code in _TRANSIENT_NI_CODES:
+                raise NIDaqTransientError(
+                    f"write hit a retry-safe NI code ({ni_code})",
                     context=ni_ctx,
                 ) from exc
             raise NIDaqWriteError(
@@ -722,7 +729,7 @@ class NidaqmxBackend:
                 "failed to register every-N-samples callback",
                 context=ErrorContext(
                     task_name=getattr(task, "name", None),
-                    operation="register_every_n_samples",
+                    command_name="register_every_n_samples",
                     ni_error_code=getattr(exc, "error_code", None),
                 ),
             ) from exc
@@ -751,7 +758,7 @@ class NidaqmxBackend:
                 "failed to unregister every-N-samples callback",
                 context=ErrorContext(
                     task_name=getattr(task, "name", None),
-                    operation="unregister_every_n_samples",
+                    command_name="unregister_every_n_samples",
                     ni_error_code=getattr(exc, "error_code", None),
                 ),
             ) from exc

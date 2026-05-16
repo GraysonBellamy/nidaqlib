@@ -15,7 +15,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from nidaqlib.errors import NIDaqError
-from nidaqlib.system import list_devices, list_physical_channels
+from nidaqlib.system import find_devices, list_physical_channels
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -96,7 +96,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for ch in channels:
                     print(f"  {ch}")
             return 0
-        devices = list_devices()
+        results = find_devices()
+        # Surface enumeration failures (driver missing, system call exploded)
+        # so the user sees a clear reason rather than "no devices found".
+        for row in results:
+            if not row.ok and row.error is not None:
+                print(f"nidaq-list: {row.error}", file=sys.stderr)
+                return 1
+        devices = [row.device_info for row in results if row.ok and row.device_info is not None]
         if args.json:
             json.dump([_device_to_dict(d) for d in devices], sys.stdout)
             sys.stdout.write("\n")

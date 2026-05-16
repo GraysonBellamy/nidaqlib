@@ -47,8 +47,9 @@ async def test_return_emits_error_block_and_continues() -> None:
             chunk_size=50,
             buffer_size=4,
             error_policy=ErrorPolicy.RETURN,
-        ) as (rx, summary),
+        ) as _rec,
     ):
+        rx, summary = _rec.stream, _rec.summary
         seen: list[DaqBlock] = []
         async for block in rx:
             seen.append(block)
@@ -83,7 +84,8 @@ async def test_raise_default_propagates() -> None:
                 chunk_size=50,
                 buffer_size=4,
                 error_policy=ErrorPolicy.RAISE,
-            ) as (rx, _summary):
+            ) as _rec2:
+                rx, _summary = _rec2.stream, _rec2.summary
                 async for _ in rx:
                     pass
     # The original NIDaqReadError must be in the group.

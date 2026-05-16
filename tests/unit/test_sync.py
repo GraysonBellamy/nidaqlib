@@ -29,8 +29,9 @@ def test_sync_record_iterates_blocks() -> None:
     backend = FakeDaqBackend(read_block_default_shape=(1, 50))
     with (
         Daq.open_device(_make_spec(), backend=backend) as session,
-        sync_record(session, chunk_size=50, buffer_size=4) as (stream, _summary),
+        sync_record(session, chunk_size=50, buffer_size=4) as _rec,
     ):
+        stream, _summary = _rec.stream, _rec.summary
         seen: list[DaqBlock] = []
         for block in stream:
             seen.append(block)

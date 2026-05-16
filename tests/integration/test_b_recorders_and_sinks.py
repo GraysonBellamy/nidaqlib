@@ -67,8 +67,9 @@ async def test_b1_record_polled_in_memory(
     async with (
         await open_device(tc_spec_on_demand) as session,
         sink,
-        record_polled(session, rate_hz=target_rate_hz, buffer_size=16) as (rx, summary),
+        record_polled(session, rate_hz=target_rate_hz, buffer_size=16) as _rec,
     ):
+        rx, summary = _rec.stream, _rec.summary
         deadline = anyio.current_time() + duration_s
         async for payload in rx:
             reading = cast("DaqReading", payload)
@@ -82,7 +83,7 @@ async def test_b1_record_polled_in_memory(
     )
     assert summary.errors_observed == 0
     # Monotonic timestamps.
-    monotonic_values = [r.monotonic_ns for r in sink.readings]
+    monotonic_values = [r.t_mono_ns for r in sink.readings]
     assert monotonic_values == sorted(monotonic_values)
     # Plausible temperatures throughout.
     for r in sink.readings:
@@ -110,8 +111,9 @@ async def _drain_polled_into_reading_sink(
     async with (
         await open_device(spec) as session,
         sink,
-        record_polled(session, rate_hz=rate_hz, buffer_size=16) as (rx, _summary),
+        record_polled(session, rate_hz=rate_hz, buffer_size=16) as _rec2,
     ):
+        rx, _summary = _rec2.stream, _rec2.summary
         deadline = anyio.current_time() + duration_s
         async for payload in rx:
             reading = cast("DaqReading", payload)
@@ -177,7 +179,7 @@ async def test_b2_record_polled_to_jsonl(
         parsed = json.loads(line)
         assert parsed["device"] == "tc_on_demand"
         assert parsed["task"] == "tc_on_demand"
-        assert "monotonic_ns" in parsed
+        assert "t_mono_ns" in parsed
         assert "primary" in parsed
         assert parsed["primary_unit"] == "degC"
 
@@ -207,8 +209,9 @@ async def test_b3_record_blocks_to_parquet(
     async with (
         await open_device(tc_spec_continuous) as session,
         ParquetSink(parquet_path) as sink,
-        record(session, chunk_size=chunk_size) as (rx, summary),
+        record(session, chunk_size=chunk_size) as _rec3,
     ):
+        rx, summary = _rec3.stream, _rec3.summary
         async for block in rx:
             seen.append(block)
             await sink.write(block)
@@ -223,7 +226,10 @@ async def test_b3_record_blocks_to_parquet(
     # Sample-rate reconstruction matches the spec.
     for b in seen:
         assert_close_float(b.sample_rate_hz, tc_config.rate_hz, where="B3.sample_rate_hz")
-        assert_close_float(b.dt_s, 1.0 / tc_config.rate_hz, where="B3.dt_s")
+        assert b.block_period_ns is not None
+        assert_close_float(
+            b.block_period_ns / 1e9, 1.0 / tc_config.rate_hz, where="B3.block_period_ns"
+        )
     # Parquet long-form: chunk_size rows per block, one row group per block.
     table = pq.read_table(parquet_path)
     assert table.num_rows == target_blocks * chunk_size
@@ -257,8 +263,9 @@ async def test_b4_polled_overflow_drop_oldest(
             rate_hz=polled_rate_hz,
             buffer_size=1,
             overflow=OverflowPolicy.DROP_OLDEST,
-        ) as (rx, summary),
+        ) as _rec4,
     ):
+        rx, summary = _rec4.stream, _rec4.summary
         deadline = anyio.current_time() + duration_s
         async for _payload in rx:
             seen += 1
@@ -301,8 +308,9 @@ async def test_b5_record_with_callback_bridge(
             session,
             chunk_size=chunk_size,
             use_callback_bridge=True,
-        ) as (rx, summary),
+        ) as _rec5,
     ):
+        rx, summary = _rec5.stream, _rec5.summary
         async for block in rx:
             seen.append(block)
             if len(seen) >= target_blocks:
@@ -336,8 +344,9 @@ async def test_b6_csv_sink_refuses_blocks_by_default(
     async with (
         await open_device(tc_spec_continuous) as session,
         sink,
-        record(session, chunk_size=chunk_size) as (rx, _summary),
+        record(session, chunk_size=chunk_size) as _rec6,
     ):
+        rx, _summary = _rec6.stream, _rec6.summary
         async for block in rx:
             with pytest.raises(NIDaqSinkSchemaError):
                 await sink.write(block)
@@ -363,8 +372,9 @@ async def test_b7_csv_sink_accept_blocks_scalarizes(
     async with (
         await open_device(tc_spec_continuous) as session,
         CsvSink(csv_path, accept_blocks=True) as sink,
-        record(session, chunk_size=chunk_size) as (rx, _summary),
+        record(session, chunk_size=chunk_size) as _rec7,
     ):
+        rx, _summary = _rec7.stream, _rec7.summary
         async for block in rx:
             blocks.append(block)
             await sink.write(block)
@@ -398,7 +408,7 @@ async def test_b8_long_run_polled_drift(
 
     - Producer emits ~``rate_hz * duration`` readings within 5 % of the
       expected count (NI scheduling jitter is the main contributor).
-    - ``monotonic_ns`` is strictly increasing across the entire run.
+    - ``t_mono_ns`` is strictly increasing across the entire run.
     - SQLite row count matches the reading count.
     - ``summary.errors_observed == 0`` and ``summary.blocks_dropped == 0``.
     """
@@ -409,8 +419,9 @@ async def test_b8_long_run_polled_drift(
     async with (
         await open_device(tc_spec_on_demand) as session,
         SqliteSink(db_path) as sink,
-        record_polled(session, rate_hz=rate_hz, buffer_size=8) as (rx, summary),
+        record_polled(session, rate_hz=rate_hz, buffer_size=8) as _rec8,
     ):
+        rx, summary = _rec8.stream, _rec8.summary
         readings: list[DaqReading] = []
         deadline = anyio.current_time() + duration_s
         async for payload in rx:
@@ -428,9 +439,9 @@ async def test_b8_long_run_polled_drift(
     assert abs(len(readings) - expected) <= max(2, expected // 20), (
         f"expected ~{expected} readings, got {len(readings)}"
     )
-    monotonic_values = [r.monotonic_ns for r in readings]
+    monotonic_values = [r.t_mono_ns for r in readings]
     assert monotonic_values == sorted(monotonic_values), (
-        "monotonic_ns should be strictly increasing over the long run"
+        "t_mono_ns should be strictly increasing over the long run"
     )
     assert summary.errors_observed == 0
     assert summary.blocks_dropped == 0
@@ -470,8 +481,9 @@ async def test_b9_bridge_cancel_mid_stream_clean_unwind(
                 session,
                 chunk_size=chunk_size,
                 use_callback_bridge=True,
-            ) as (rx, summary),
+            ) as _rec9,
         ):
+            rx, summary = _rec9.stream, _rec9.summary
             async for _block in rx:
                 received += 1
                 if received >= 2:
@@ -509,8 +521,9 @@ async def test_b10_bridge_two_channel_blocks(
             session,
             chunk_size=chunk_size,
             use_callback_bridge=True,
-        ) as (rx, _summary),
+        ) as _rec10,
     ):
+        rx, _summary = _rec10.stream, _rec10.summary
         async for block in rx:
             seen.append(block)
             if len(seen) >= target_blocks:

@@ -8,14 +8,9 @@ Shape-locking. The first call to either :meth:`write` or :meth:`write_many`
 locks the schema. Mixing record shapes after the first write raises
 :class:`NIDaqSinkSchemaError`.
 
-Block layout (long-format):
-
-- ``device``, ``task``, ``channel`` — labels.
-- ``block_index``, ``sample_index`` — monotonic indices for joining.
-- ``time_s`` — elapsed seconds since ``task_started_at`` (reconstructed
-  via the §8.7 formula).
-- ``value``, ``unit`` — the sample.
-- ``block_t0`` — wall-clock anchor for the block; ISO 8601.
+Block layout (long-format) — one row per ``(channel, sample)``, with
+``t_mono_ns`` / ``t_utc`` per row reconstructed via
+:func:`nidaqlib.block_to_rows`.
 
 pyarrow is an optional dependency behind ``nidaqlib[parquet]``; the import
 defers to :meth:`open` so instantiating the sink succeeds on bare-core
@@ -30,13 +25,13 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 from nidaqlib._logging import get_logger
 from nidaqlib.errors import NIDaqSinkDependencyError, NIDaqSinkSchemaError, NIDaqSinkWriteError
 from nidaqlib.sinks._schema import ColumnSpec, SchemaLock
-from nidaqlib.sinks.base import reading_to_row, sample_to_row
+from nidaqlib.sinks.base import block_to_rows, reading_to_row
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from types import TracebackType
 
-    from nidaqlib.tasks.models import DaqBlock, DaqReading, DaqSample
+    from nidaqlib.tasks.models import DaqBlock, DaqReading
 
 
 __all__ = ["ParquetSink"]
@@ -88,7 +83,7 @@ class ParquetSink:
             raise ValueError(f"row_group_size must be >= 1 if set, got {row_group_size!r}")
         self._row_group_size = row_group_size
         self._schema = SchemaLock(sink_name="parquet", logger=_logger)
-        self._shape: Literal["readings", "samples", "blocks"] | None = None
+        self._shape: Literal["readings", "blocks"] | None = None
         self._pa: Any = None
         self._pq: Any = None
         self._arrow_schema: Any = None
@@ -111,7 +106,7 @@ class ParquetSink:
         return self._schema.columns
 
     @property
-    def shape(self) -> Literal["readings", "samples", "blocks"] | None:
+    def shape(self) -> Literal["readings", "blocks"] | None:
         """Locked record shape, or ``None`` before first write."""
         return self._shape
 
@@ -130,11 +125,8 @@ class ParquetSink:
             extra={"path": str(self._path), "compression": self._compression},
         )
 
-    async def write_many(
-        self,
-        items: Sequence[DaqReading] | Sequence[DaqSample],
-    ) -> None:
-        """Append :class:`DaqReading` or :class:`DaqSample` rows.
+    async def write_many(self, items: Sequence[DaqReading]) -> None:
+        """Append :class:`DaqReading` rows.
 
         First call locks the schema and the record shape. Mixing shapes
         afterwards raises :class:`NIDaqSinkSchemaError`.
@@ -143,22 +135,8 @@ class ParquetSink:
             raise RuntimeError("ParquetSink: write_many called before open()")
         if not items:
             return
-
-        from nidaqlib.tasks.models import DaqReading, DaqSample  # noqa: PLC0415
-
-        first = items[0]
-        if isinstance(first, DaqReading):
-            shape: Literal["readings", "samples", "blocks"] = "readings"
-            rows = [reading_to_row(r) for r in items]  # type: ignore[arg-type]
-        elif isinstance(first, DaqSample):  # pyright: ignore[reportUnnecessaryIsInstance]
-            shape = "samples"
-            rows = [sample_to_row(s) for s in items]  # type: ignore[arg-type]
-        else:  # pragma: no cover - defensive
-            raise NIDaqSinkSchemaError(
-                f"ParquetSink.write_many: unsupported record type {type(first).__name__}"
-            )
-        self._lock_or_check_shape(shape)
-        self._write_rows(rows)
+        self._lock_or_check_shape("readings")
+        self._write_rows([reading_to_row(r) for r in items])
 
     async def write(self, block: DaqBlock) -> None:
         """Append one :class:`DaqBlock` as a row group of long-format rows.
@@ -170,10 +148,9 @@ class ParquetSink:
         if self._pa is None:
             raise RuntimeError("ParquetSink: write called before open()")
         self._lock_or_check_shape("blocks")
-        rows = list(_block_to_long_dict_rows(block))
-        self._write_rows(rows)
+        self._write_rows(block_to_rows(block))
 
-    def _lock_or_check_shape(self, shape: Literal["readings", "samples", "blocks"]) -> None:
+    def _lock_or_check_shape(self, shape: Literal["readings", "blocks"]) -> None:
         """Lock ``self._shape`` on first write; reject mixed shapes after."""
         if self._shape is None:
             self._shape = shape
@@ -260,40 +237,3 @@ class ParquetSink:
     ) -> None:
         del exc_type, exc, tb
         await self.close()
-
-
-def _block_to_long_dict_rows(
-    block: DaqBlock,
-) -> list[dict[str, float | int | str | bool | None]]:
-    """Fan a block out to long-format dict rows for the Parquet schema."""
-    n_channels = len(block.channels)
-    n_samples = block.samples_per_channel
-    rate_hz = block.sample_rate_hz
-    if rate_hz is None:
-        span = (block.read_finished_at - block.read_started_at).total_seconds()
-        dt_s = span / max(1, n_samples)
-    else:
-        dt_s = 1.0 / rate_hz
-
-    block_t0_iso = block.t0.isoformat()
-    rows: list[dict[str, float | int | str | bool | None]] = []
-    for c in range(n_channels):
-        ch_name = block.channels[c]
-        unit = block.units.get(ch_name)
-        for k in range(n_samples):
-            absolute = block.first_sample_index + k
-            time_s = absolute * dt_s if rate_hz is not None else k * dt_s
-            rows.append(
-                {
-                    "device": block.device,
-                    "task": block.task,
-                    "channel": ch_name,
-                    "block_index": block.block_index,
-                    "sample_index": absolute,
-                    "time_s": time_s,
-                    "value": float(block.data[c, k]),
-                    "unit": unit,
-                    "block_t0": block_t0_iso,
-                }
-            )
-    return rows

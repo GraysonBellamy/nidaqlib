@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-15
+
+### Unified API (v1)
+
+Cross-library API alignment with the sibling instrument libraries
+(`alicatlib`, `sartoriuslib`, `watlowlib`). No deprecation aliases —
+old names are removed.
+
+#### Added
+
+- `find_devices() -> list[DiscoveryResult]` (replaces `list_devices()`)
+  with `DiscoveryResult` / `NIDaqDiscoveryResult` matching the shared
+  §B shape (`ok`, `port`, `address=None`, `protocol=None`, `device_info`,
+  `error`, `elapsed_s`). Never raises — enumeration failures surface as
+  a single `ok=False` row.
+- `Recording[T]` wrapper (`stream`, `summary`, `rate_hz`) replaces the
+  `(stream, summary)` tuple from `record()` / `record_polled()`. Sync
+  facade mirrors this as `SyncRecording[T]`.
+- `PollSource` Protocol and `PollSourceAdapter(session)` for wrapping a
+  polled `DaqSession` into the uniform `poll(names) -> Mapping[str,
+  DeviceResult[DaqReading]]` shape. `record_polled()` accepts any
+  `PollSource` in addition to the existing session/manager sources.
+- `NIDaqTransientError` — new exception class for retry-safe NI codes.
+  Initial set: `{-200279, -200284}`. Extend via PR as new codes surface.
+- `DaqSession.snapshot()` returning `NIDaqSnapshot` (extends new
+  `DeviceSnapshot` shared base). I/O-free — built from the cached
+  `DeviceInfo` captured at configure time.
+- `TaskState` enum (`CREATED` / `CONFIGURED` / `RUNNING` / `STOPPED` /
+  `CLOSED`), exposed on `DaqSession.task_state()` and `NIDaqSnapshot`.
+- `DaqSession.recoverable_error_count` public counter, incremented when
+  the recorder swallows a `NIDaqTransientError` under
+  `ErrorPolicy.RETURN`. Resets on every `configure()`.
+- `nidaqlib.reading_to_row` and `nidaqlib.block_to_rows` promoted to
+  top-level public exports. `block_to_rows` returns
+  `list[dict[str, ScalarValue]]` directly with per-sample `t_mono_ns`
+  / `t_utc` reconstructed from `block.block_period_ns`.
+- `nidaqlib.units.to_pint(unit)` — lossy-by-design unit-string helper
+  covering `TemperatureUnits` plus a passthrough table for common
+  voltage / current / frequency / pressure strings.
+- `ProtocolKind(StrEnum)` (no members) — stub type carried on
+  `ErrorContext.protocol` for cross-library shape uniformity.
+- `nidaqlib.testing.NIDaqFakeBackend` alias for `FakeDaqBackend`.
+
+#### Changed (breaking)
+
+1. **`list_devices` removed.** Use `find_devices()`; returns
+   `list[DiscoveryResult]` instead of `list[DeviceInfo]`.
+2. **`nidaqlib.sinks.base.reading_to_row` private path removed.**
+   Import from `nidaqlib` directly.
+3. **`block_to_long_rows` renamed in place to `block_to_rows`** and
+   promoted to top-level. Return type changes from `Iterator[DaqSample]`
+   to `list[dict[str, ScalarValue]]`.
+4. **`DaqSample` class removed.** No internal caller remains after
+   `block_to_rows` returns dicts; row-oriented sinks accept
+   `Sequence[DaqReading]` only.
+5. **`DaqReading` / `DaqBlock` timestamp standardization**:
+   - Renamed `monotonic_ns` → `t_mono_ns` on both.
+   - Added `t_utc: datetime` and `t_midpoint_mono_ns: int | None`.
+   - Removed `DaqReading.midpoint_at` (now `t_utc`).
+   - Added `DaqBlock.block_period_ns: int | None`; removed
+     `DaqBlock.dt_s` (use `block_period_ns / 1e9`).
+   - `DaqBlock.sample_rate_hz` is now a `@property` derived from
+     `block_period_ns`.
+   - Block provenance fields (`task_started_at`, `t0`, `read_started_at`,
+     `read_finished_at`, `elapsed_s`) retained.
+6. **`ErrorContext.operation` renamed to `command_name`.** All ~30 call
+   sites updated. New base fields: `port`, `address=None`,
+   `protocol=None` (always `None` for NI).
+7. **NI error code `-200284` reclassified** from `NIDaqTimeoutError` to
+   `NIDaqTransientError`. Callers catching `NIDaqTimeoutError` for this
+   code switch to `NIDaqTransientError` (or the common base
+   `NIDaqError`).
+8. **`DeviceResult.name` field removed.** The mapping key already names
+   the task. New classmethod factories `DeviceResult.success(value)` /
+   `DeviceResult.failure(error)`.
+9. **`record()` and `record_polled()` yield `Recording(stream, summary,
+   rate_hz)`** instead of `(stream, summary)` tuples. Sync wrappers
+   yield `SyncRecording[T]`.
+10. **Sink simplification**: `SampleSink` Protocol and `sample_to_row`
+    removed. `SqliteSink` and `PostgresSink` drop `table_samples` (only
+    `table_readings` and `table_blocks` remain).
+
+#### Fixed
+
+- `find_devices` no longer raises on cDAQ chassis modules that return
+  `-200197` ("Device does not support this property") when queried for
+  `compact_daq_chassis_device`. Discovery now swallows the per-row
+  failure and returns `None` for the optional `chassis` field.
+
 ## [0.2.0] - 2026-05-10
 
 ### Added
@@ -113,5 +202,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stored the enum object as-is, breaking JSON round-trip whenever
   `terminal_config` was set.
 
+[0.3.0]: https://github.com/GraysonBellamy/nidaqlib/releases/tag/v0.3.0
 [0.2.0]: https://github.com/GraysonBellamy/nidaqlib/releases/tag/v0.2.0
 [0.1.0]: https://github.com/GraysonBellamy/nidaqlib/releases/tag/v0.1.0

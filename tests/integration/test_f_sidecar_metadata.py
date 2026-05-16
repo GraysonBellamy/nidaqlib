@@ -61,10 +61,7 @@ async def test_f1_sidecar_round_trip(
 
     async with (
         await open_device(spec) as session,
-        record(session, chunk_size=max(2, int(tc_config.rate_hz // 2))) as (
-            _rx,
-            _summary,
-        ),
+        record(session, chunk_size=max(2, int(tc_config.rate_hz // 2))) as _recording,
     ):
         del session  # used only to start the task; samples flow into TDMS
         await anyio.sleep(1.5)

@@ -1,12 +1,11 @@
-"""CSV sink — one row per :class:`DaqReading` / :class:`DaqSample`.
+"""CSV sink — one row per :class:`DaqReading`.
 
 The column order is locked the first time :meth:`write_many` is called.
 Unknown columns in later batches are dropped with a one-shot WARN.
 
 Refuses :class:`DaqBlock` by default. Set ``accept_blocks=True`` to opt
-into per-sample scalarisation via :func:`block_to_long_rows` — guards
-against accidentally writing 1-GB CSVs at 10 kHz × 8 channels (design
-doc §14.1).
+into per-sample scalarisation via :func:`block_to_rows` — guards
+against accidentally writing 1-GB CSVs at 10 kHz × 8 channels.
 
 Stdlib-only (uses :mod:`csv`).
 """
@@ -19,14 +18,14 @@ from typing import TYPE_CHECKING, Self
 
 from nidaqlib._logging import get_logger
 from nidaqlib.errors import NIDaqSinkSchemaError
-from nidaqlib.sinks.base import block_to_long_rows, reading_to_row, sample_to_row
+from nidaqlib.sinks.base import block_to_rows, reading_to_row
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from io import TextIOWrapper
     from types import TracebackType
 
-    from nidaqlib.tasks.models import DaqBlock, DaqReading, DaqSample
+    from nidaqlib.tasks.models import DaqBlock, DaqReading
 
 
 __all__ = ["CsvSink"]
@@ -41,7 +40,7 @@ class CsvSink:
     Args:
         path: Destination file. Created or overwritten on :meth:`open`.
         accept_blocks: When ``True``, :meth:`write` calls
-            :func:`block_to_long_rows` and emits one CSV row per (channel,
+            :func:`block_to_rows` and emits one CSV row per (channel,
             sample). Default ``False`` raises
             :class:`NIDaqSinkSchemaError`.
     """
@@ -71,39 +70,20 @@ class CsvSink:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._file = self._path.open("w", encoding="utf-8", newline="")
 
-    async def write_many(
-        self,
-        items: Sequence[DaqReading] | Sequence[DaqSample],
-    ) -> None:
-        """Append :class:`DaqReading` or :class:`DaqSample` rows.
-
-        Sniffs the first item's type to choose the row helper.
-        """
+    async def write_many(self, items: Sequence[DaqReading]) -> None:
+        """Append :class:`DaqReading` rows."""
         if self._file is None:
             raise RuntimeError("CsvSink: write_many called before open()")
         if not items:
             return
-
-        # Late import — avoid circulars.
-        from nidaqlib.tasks.models import DaqReading, DaqSample  # noqa: PLC0415
-
-        first = items[0]
-        if isinstance(first, DaqReading):
-            rows = [reading_to_row(item) for item in items]  # type: ignore[arg-type]
-        elif isinstance(first, DaqSample):  # pyright: ignore[reportUnnecessaryIsInstance]
-            rows = [sample_to_row(item) for item in items]  # type: ignore[arg-type]
-        else:  # pragma: no cover - defensive
-            raise NIDaqSinkSchemaError(
-                f"CsvSink.write_many: unsupported record type {type(first).__name__}"
-            )
-
+        rows = [reading_to_row(item) for item in items]
         self._write_rows(rows)
 
     async def write(self, block: DaqBlock) -> None:
         """Refuse blocks unless ``accept_blocks=True`` was set on construction.
 
         With ``accept_blocks=True``, per-(channel, sample) rows are emitted
-        via :func:`block_to_long_rows`. The cost of this opt-in is up to
+        via :func:`block_to_rows`. The cost of this opt-in is up to
         ``n_channels * samples_per_channel`` rows per block.
         """
         if not self._accept_blocks:
@@ -114,8 +94,7 @@ class CsvSink:
             )
         if self._file is None:
             raise RuntimeError("CsvSink: write called before open()")
-        rows = [sample_to_row(s) for s in block_to_long_rows(block)]
-        self._write_rows(rows)
+        self._write_rows(block_to_rows(block))
 
     def _write_rows(self, rows: list[dict[str, float | int | str | bool | None]]) -> None:
         """Append ``rows`` after first-batch schema-lock bookkeeping."""

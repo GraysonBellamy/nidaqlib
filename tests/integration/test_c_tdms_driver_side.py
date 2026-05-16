@@ -87,11 +87,9 @@ async def test_c1_tdms_log_only_emits_empty_stream(
 
     async with (
         await open_device(spec) as session,
-        record(session, chunk_size=max(2, int(tc_config.rate_hz // 2))) as (
-            rx,
-            summary,
-        ),
+        record(session, chunk_size=max(2, int(tc_config.rate_hz // 2))) as recording,
     ):
+        rx, summary = recording.stream, recording.summary
         # The recorder must short-circuit — `record_started_at` should
         # complete almost immediately rather than blocking on a buffered
         # read. We cap the wait at 1 s so a regression here surfaces as a
@@ -148,8 +146,9 @@ async def test_c2_tdms_log_and_read_dual_path(
     seen: list[DaqBlock] = []
     async with (
         await open_device(spec) as session,
-        record(session, chunk_size=chunk_size) as (rx, summary),
+        record(session, chunk_size=chunk_size) as _rec,
     ):
+        rx, summary = _rec.stream, _rec.summary
         async for block in rx:
             seen.append(block)
             if len(seen) >= target_blocks:

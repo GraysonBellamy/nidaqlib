@@ -1,24 +1,35 @@
-"""Acquisition record types — :class:`DaqReading`, :class:`DaqBlock`, :class:`DaqSample`.
+"""Acquisition record types — :class:`DaqReading`, :class:`DaqBlock`.
 
 :class:`DaqReading` is the cross-instrument scalar bridge that mirrors
-``alicatlib.Sample`` and ``sartoriuslib.Sample`` (design doc §8.6 / §8.8) —
-DAQ rows land in the same SQLite/Parquet pipeline as flow-controller and
-balance rows, joinable on ``(device, monotonic_ns)``.
+``alicatlib.Sample`` and ``sartoriuslib.Sample`` — DAQ rows land in the
+same SQLite/Parquet pipeline as flow-controller and balance rows,
+joinable on ``(device, t_mono_ns)``.
 
-:class:`DaqBlock` is the rectangular hardware-clocked record that carries an
-``np.ndarray`` of shape ``(n_channels, samples_per_channel)`` (design doc §8.7).
-Sample timestamps are reconstructed from ``task_started_at`` plus
-``first_sample_index`` — the wall-clock provenance fields are not per-sample
-truth and must not be interpolated against.
+:class:`DaqBlock` is the rectangular hardware-clocked record that carries
+an ``np.ndarray`` of shape ``(n_channels, samples_per_channel)``. Per-sample
+timestamps are reconstructed from ``t_mono_ns + k * block_period_ns``
+(monotonic ns) or ``task_started_at`` + offset (wall clock).
 
-:class:`DaqSample` is the per-channel-per-sample scalarized row produced by
-``block_to_long_rows()`` for opt-in CSV/JSONL fan-out (design doc §8.9). It
-is never produced automatically by recorders or sinks.
+Both records expose the cross-library §C timestamp contract:
+
+- ``t_mono_ns: int`` — canonical join key (monotonic nanoseconds).
+- ``t_utc: datetime`` — wall-clock acquisition instant, UTC, tz-aware.
+- ``t_midpoint_mono_ns: int | None`` — integration-window midpoint.
+
+For :class:`DaqReading` (software-timed polling), ``t_mono_ns`` / ``t_utc``
+are the midpoint of the request/receive window. ``t_midpoint_mono_ns`` is
+``None`` because the polled read has no separate integration window beyond
+that I/O window.
+
+For :class:`DaqBlock` (hardware-clocked), ``t_mono_ns`` / ``t_utc`` describe
+sample index 0. ``t_midpoint_mono_ns`` is the midpoint of the full block
+window (populated at construction).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -27,7 +38,31 @@ if TYPE_CHECKING:
 
     import numpy as np
 
-    from nidaqlib.errors import NIDaqError
+    from nidaqlib.errors import ErrorContext, NIDaqError
+
+
+class TaskState(StrEnum):
+    """Coarse projection of NI DAQmx's documented task lifecycle.
+
+    NI's underlying ``verified``/``reserved``/``committed`` states all
+    bucket into :attr:`CONFIGURED` because the wrapper does not separately
+    track them today. The other four are 1:1 with NI's documented states.
+    """
+
+    CREATED = "CREATED"
+    """Task has been constructed; channels not yet applied."""
+
+    CONFIGURED = "CONFIGURED"
+    """Channels + timing applied (NI ``verified``/``reserved``/``committed``)."""
+
+    RUNNING = "RUNNING"
+    """``task.start()`` has been called."""
+
+    STOPPED = "STOPPED"
+    """Stopped but not yet closed; may transition back to RUNNING."""
+
+    CLOSED = "CLOSED"
+    """Backing NI task has been released."""
 
 
 def _empty_metadata() -> dict[str, str | int | float | bool]:
@@ -38,26 +73,24 @@ def _empty_metadata() -> dict[str, str | int | float | bool]:
 class DaqReading:
     """One scalar (or low-rate) reading across the channels of a task.
 
-    Field shape mirrors ``alicatlib.Sample`` and ``sartoriuslib.Sample`` so
-    that DAQ rows join cleanly against flow-controller and balance rows on
-    ``(device, monotonic_ns)``. See design doc §8.6 / §8.8.
-
     Attributes:
         device: Manager-add name, or ``TaskSpec.name`` when emitted directly
-            from a session. This is the cross-instrument join key.
+            from a session. The cross-instrument join key.
         task: Underlying ``TaskSpec.name`` (optional second key).
         values: One entry per channel, keyed by channel display name.
         units: Engineering units, keyed by channel display name. ``None``
             entries indicate "no unit declared on the channel spec."
-        requested_at: Wall-clock immediately before the read.
-        received_at: Wall-clock immediately after the read returns.
-        midpoint_at: Midpoint of the request/receive window.
-        monotonic_ns: ``time.monotonic_ns()`` at the midpoint. Use this — not
-            wall-clock — for join arithmetic; wall-clock is non-monotonic
-            across clock adjustments.
+        t_mono_ns: ``time.monotonic_ns()`` at the midpoint of the
+            request/receive window. Canonical join key.
+        t_utc: Wall-clock at the midpoint of the request/receive window.
+        t_midpoint_mono_ns: Optional integration-window midpoint. ``None``
+            for software-timed polling — ``t_mono_ns`` already names the
+            midpoint of the I/O window.
+        requested_at: Wall-clock immediately before the read (provenance).
+        received_at: Wall-clock immediately after the read returns
+            (provenance).
         latency_s: ``received_at - requested_at`` in seconds.
-        metadata: Free-form scalar metadata (often the source ``TaskSpec``'s
-            metadata, optionally merged with manager-level metadata).
+        metadata: Free-form scalar metadata.
         error: Populated only under ``ErrorPolicy.RETURN``. Always ``None``
             under the default ``RAISE`` policy.
     """
@@ -66,10 +99,11 @@ class DaqReading:
     task: str | None = None
     values: Mapping[str, float | int | bool]
     units: Mapping[str, str | None]
+    t_mono_ns: int
+    t_utc: datetime
+    t_midpoint_mono_ns: int | None = None
     requested_at: datetime
     received_at: datetime
-    midpoint_at: datetime
-    monotonic_ns: int
     latency_s: float
     metadata: Mapping[str, str | int | float | bool] = field(default_factory=_empty_metadata)
     error: NIDaqError | None = None
@@ -80,41 +114,42 @@ class DaqBlock:
     """One rectangular block of hardware-clocked samples.
 
     The ``data`` field is the natural shape for Parquet row groups, NumPy
-    slicing, and TDMS — *do not scalarize unless the user opts in via
-    ``block_to_long_rows()``*.
+    slicing, and TDMS — do not scalarize unless the user opts in via
+    :func:`nidaqlib.block_to_rows`.
 
-    To recover the wall-clock timestamp of sample ``k`` (where
-    ``0 <= k < samples_per_channel``)::
+    To recover the wall-clock or monotonic timestamp of sample ``k``::
 
-        absolute = block.first_sample_index + k
-        elapsed = absolute / block.sample_rate_hz
-        sample_at = block.task_started_at + timedelta(seconds=elapsed)
+        t_mono_k = block.t_mono_ns + k * block.block_period_ns
+        elapsed_k = (block.first_sample_index + k) / block.sample_rate_hz
+        t_wall_k = block.task_started_at + timedelta(seconds=elapsed_k)
 
-    Do **not** interpolate sample times off ``t0`` or ``read_started_at`` —
-    those drift block-to-block.
+    Do **not** interpolate sample times off ``read_started_at`` —
+    that drifts block-to-block.
 
     Attributes:
         device: Manager-add name, or ``TaskSpec.name`` when emitted directly.
         task: Underlying ``TaskSpec.name``.
         channels: Channel display names in the row order of ``data``.
-        data: NumPy array. Invariant — shape is
-            ``(len(channels), samples_per_channel)`` and is asserted in
-            :meth:`__post_init__`. ``dtype`` is ``float64`` for AI voltage.
+        data: NumPy array of shape ``(len(channels), samples_per_channel)``.
+            ``dtype`` is ``float64`` for AI voltage.
         block_index: 0-based, monotonic per task. Resets on a new task.
         first_sample_index: Cumulative sample offset since ``task_started_at``.
-        samples_per_channel: ``data.shape[1]``. Held redundantly so consumers
-            need not import NumPy to inspect block size.
-        sample_rate_hz: From ``Timing.rate_hz``. ``None`` for on-demand reads.
-        dt_s: ``1 / sample_rate_hz`` when ``sample_rate_hz`` is set.
+        samples_per_channel: ``data.shape[1]``.
+        block_period_ns: Integer nanoseconds between consecutive samples.
+            ``None`` for on-demand reads (no clock).
+        t_mono_ns: ``time.monotonic_ns()`` at sample index 0. Canonical join
+            key.
+        t_utc: Wall-clock at sample index 0 (UTC, tz-aware).
+        t_midpoint_mono_ns: Midpoint of the full block window in
+            ``monotonic_ns``; ``None`` for on-demand blocks.
         task_started_at: Wall-clock anchor for sample-time reconstruction.
-        t0: Wall-clock at the first sample of *this* block; provenance only.
-        monotonic_ns: ``time.monotonic_ns()`` at ``read_started_at``.
-        read_started_at: Wall-clock just before the read; provenance only.
-        read_finished_at: Wall-clock just after the read; provenance only.
+        t0: Wall-clock at the first sample of *this* block; equals
+            ``t_utc`` but kept as separate provenance.
+        read_started_at: Wall-clock just before the read (provenance).
+        read_finished_at: Wall-clock just after the read (provenance).
         elapsed_s: ``read_finished_at - read_started_at`` in seconds.
         units: Engineering units keyed by channel display name.
-        error: Populated only under ``ErrorPolicy.RETURN``. Always ``None``
-            under the default ``RAISE`` policy.
+        error: Populated only under ``ErrorPolicy.RETURN``.
     """
 
     device: str
@@ -124,16 +159,24 @@ class DaqBlock:
     block_index: int
     first_sample_index: int
     samples_per_channel: int
-    sample_rate_hz: float | None
-    dt_s: float | None
+    block_period_ns: int | None
+    t_mono_ns: int
+    t_utc: datetime
+    t_midpoint_mono_ns: int | None
     task_started_at: datetime
     t0: datetime
-    monotonic_ns: int
     read_started_at: datetime
     read_finished_at: datetime
     elapsed_s: float
     units: Mapping[str, str | None]
     error: NIDaqError | None = None
+
+    @property
+    def sample_rate_hz(self) -> float | None:
+        """Convenience: ``1e9 / block_period_ns``; ``None`` for on-demand."""
+        if self.block_period_ns is None or self.block_period_ns == 0:
+            return None
+        return 1e9 / self.block_period_ns
 
     def __post_init__(self) -> None:
         """Validate the rectangular-shape invariant.
@@ -142,8 +185,6 @@ class DaqBlock:
             NIDaqValidationError: ``data.shape`` does not equal
                 ``(len(channels), samples_per_channel)``.
         """
-        # Local import — keeps the model module from importing the errors
-        # module at parse time to avoid circular-import surprises.
         from nidaqlib.errors import NIDaqValidationError  # noqa: PLC0415
 
         n_channels = len(self.channels)
@@ -157,38 +198,47 @@ class DaqBlock:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class DaqSample:
-    """One scalar sample for one channel — the explicit-scalarization record.
+class DeviceSnapshot:
+    """Cross-instrument snapshot of one device's state, captured without I/O.
 
-    Produced **only** by ``block_to_long_rows(block)`` for users who deliberately
-    want one row per (channel, sample) — e.g. low-rate logging into a CSV
-    alongside Alicat / Sartorius rows. High-rate streaming should stay in
-    :class:`DaqBlock` shape (design doc §8.9).
+    Shape-shared across sibling libraries (``alicatlib``, ``sartoriuslib``,
+    ``watlowlib``). NI extras sit on :class:`NIDaqSnapshot`.
 
     Attributes:
-        device: Manager-add name, or :attr:`TaskSpec.name`. Matches the
-            :class:`DaqReading` join key.
-        task: Underlying :attr:`TaskSpec.name`.
-        channel: Display name of the channel this sample belongs to.
-        value: The scalar value.
-        acquired_at: Wall-clock reconstructed from
-            ``task_started_at + sample_index / sample_rate_hz``.
-        monotonic_ns: ``time.monotonic_ns()`` proxy reconstructed from the
-            block's ``monotonic_ns`` plus ``sample_index * dt_s``.
-        unit: Engineering unit, or ``None`` if the channel did not declare
-            one.
-        error: Populated only on error-tagged blocks under
-            :class:`ErrorPolicy.RETURN`. Always ``None`` on success rows.
+        name: Device / task name.
+        model: Hardware model string, when known.
+        firmware: Firmware version, when known. Always ``None`` for NI.
+        serial: Device serial number, when known.
+        connected: ``True`` when the underlying resource is reachable.
+        last_error: Most recent :class:`ErrorContext`, or ``None``.
+        recoverable_error_count: Running count of swallowed
+            :class:`NIDaqTransientError` events.
+        captured_at: UTC, tz-aware wall-clock at snapshot construction.
     """
 
-    device: str
-    task: str | None = None
-    channel: str
-    value: float | int | bool
-    acquired_at: datetime
-    monotonic_ns: int
-    unit: str | None
-    error: NIDaqError | None = None
+    name: str
+    model: str | None
+    firmware: str | None
+    serial: str | None
+    connected: bool
+    last_error: ErrorContext | None
+    recoverable_error_count: int
+    captured_at: datetime
 
 
-__all__ = ["DaqBlock", "DaqReading", "DaqSample"]
+@dataclass(frozen=True, slots=True, kw_only=True)
+class NIDaqSnapshot(DeviceSnapshot):
+    """NI-specific snapshot — adds task state and physical inventory."""
+
+    task_name: str
+    task_state: TaskState
+    channel_count: int
+    timing_mode: str | None
+    rate_hz: float | None
+    physical_channels: tuple[str, ...]
+    product_type: str | None
+    chassis: str | None
+    physical_module: str | None
+
+
+__all__ = ["DaqBlock", "DaqReading", "DeviceSnapshot", "NIDaqSnapshot", "TaskState"]

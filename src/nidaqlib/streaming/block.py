@@ -35,12 +35,14 @@ from nidaqlib.errors import (
     ErrorContext,
     NIDaqReadError,
     NIDaqTaskStateError,
-    NIDaqTimeoutError,
+    NIDaqTransientError,
 )
+from nidaqlib.streaming._types import Recording
 from nidaqlib.tasks.models import DaqBlock
+from nidaqlib.tasks.spec import AcquisitionMode
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator
+    from collections.abc import AsyncGenerator
 
     import numpy as np
     from anyio.abc import TaskGroup
@@ -60,7 +62,7 @@ class ErrorPolicy(StrEnum):
     then continue.
 
     The recorder MUST advance timing counters (``block_index`` /
-    ``first_sample_index`` / ``monotonic_ns``) on error records so consumers
+    ``first_sample_index`` / ``t_mono_ns``) on error records so consumers
     can detect dropped intervals. Consumers MUST gate on ``error is None``
     before reading ``data``."""
 
@@ -132,32 +134,32 @@ def _validate_record_state(
                 "ErrorPolicy.RETURN — only RAISE is wired for the §11.3.2 "
                 "bridge. Use the blocking-read path (use_callback_bridge=False) "
                 "if you need RETURN semantics.",
-                context=ErrorContext(task_name=source.spec.name, operation="record"),
+                context=ErrorContext(task_name=source.spec.name, command_name="record"),
             )
         if not source.is_configured:
             raise NIDaqTaskStateError(
                 f"record(use_callback_bridge=True) requires a configured session; "
                 f"task {source.spec.name!r} is not configured",
-                context=ErrorContext(task_name=source.spec.name, operation="record"),
+                context=ErrorContext(task_name=source.spec.name, command_name="record"),
             )
         if source.is_started:
             raise NIDaqTaskStateError(
                 f"record(use_callback_bridge=True) requires an unstarted session; "
                 f"task {source.spec.name!r} is already started. "
                 f"Use open_device(spec, autostart=False) to defer the start.",
-                context=ErrorContext(task_name=source.spec.name, operation="record"),
+                context=ErrorContext(task_name=source.spec.name, command_name="record"),
             )
     elif not source.is_started:
         raise NIDaqTaskStateError(
             f"record() requires a started session; task {source.spec.name!r} is not running",
-            context=ErrorContext(task_name=source.spec.name, operation="record"),
+            context=ErrorContext(task_name=source.spec.name, command_name="record"),
         )
     timing = source.spec.timing
     if timing is None or getattr(timing, "mode", None) == "on_demand":
         raise NIDaqTaskStateError(
             "record() requires a hardware-clocked task; use record_polled() for "
             "timing=None or AcquisitionMode.ON_DEMAND",
-            context=ErrorContext(task_name=source.spec.name, operation="record"),
+            context=ErrorContext(task_name=source.spec.name, command_name="record"),
         )
 
 
@@ -171,12 +173,12 @@ async def record(
     error_policy: ErrorPolicy = ErrorPolicy.RAISE,
     overflow: OverflowPolicy = OverflowPolicy.DROP_OLDEST,
     use_callback_bridge: bool = False,
-) -> AsyncGenerator[tuple[AsyncIterator[DaqBlock], AcquisitionSummary]]:
+) -> AsyncGenerator[Recording[DaqBlock]]:
     """Hardware-clocked block acquisition.
 
-    Yields ``(stream, summary)``. The stream is closed when this context
-    manager exits; ``summary`` is mutated in place during the run and is
-    safe to read after exit (the values are frozen on the way out).
+    Yields a :class:`Recording[DaqBlock]`. The stream is closed when this
+    context manager exits; ``summary`` is mutated in place during the run
+    and is safe to read after exit.
 
     Args:
         source: A configured :class:`DaqSession`. Required state depends on
@@ -223,18 +225,24 @@ async def record(
     )
 
     summary = AcquisitionSummary()
+    timing = source.spec.timing
+    rate_hz: float | None = (
+        timing.rate_hz
+        if timing is not None and timing.mode is not AcquisitionMode.ON_DEMAND
+        else None
+    )
     tx, rx = anyio.create_memory_object_stream[DaqBlock](max_buffer_size=buffer_size)
     drop_rx = rx.clone()
 
-    # Design §13.2 / §14.6 — TDMS LoggingMode.LOG bypasses the application
-    # read path. If we tried to drive the producer, ``read_block`` would
-    # block forever waiting on samples that never arrive. Detect at entry
-    # and emit an empty stream so consumers see ``blocks_emitted == 0``.
+    # TDMS LoggingMode.LOG bypasses the application read path. If we tried
+    # to drive the producer, ``read_block`` would block forever waiting on
+    # samples that never arrive. Detect at entry and emit an empty stream
+    # so consumers see ``blocks_emitted == 0``.
     if _is_log_only(source):
         async with rx, drop_rx:
             await tx.aclose()
             try:
-                yield rx, summary
+                yield Recording(stream=rx, summary=summary, rate_hz=rate_hz)
             finally:
                 summary.finished_at = datetime.now(UTC)
         return
@@ -255,7 +263,7 @@ async def record(
                 error_policy,
             )
         try:
-            yield rx, summary
+            yield Recording(stream=rx, summary=summary, rate_hz=rate_hz)
         finally:
             await tx.aclose()
             tg.cancel_scope.cancel()
@@ -301,12 +309,14 @@ async def _blocking_producer(
         while True:
             try:
                 block = await source.read_block(chunk_size, timeout=timeout)
-            except (NIDaqReadError, NIDaqTimeoutError) as exc:
+            except (NIDaqReadError, NIDaqTransientError) as exc:
                 summary.errors_observed += 1
+                if isinstance(exc, NIDaqTransientError):
+                    source._recoverable_error_count += 1  # pyright: ignore[reportPrivateUsage]
                 if error_policy is ErrorPolicy.RAISE:
                     raise
                 # RETURN — emit an error-tagged block. Counters still advance
-                # so the consumer can detect dropped intervals (design §13.2).
+                # so the consumer can detect dropped intervals.
                 error_block = _build_error_block(source, chunk_size, exc)
                 await _send_with_overflow(tx, drop_rx, error_block, summary, overflow)
                 continue
@@ -323,7 +333,7 @@ async def _blocking_producer(
 def _build_error_block(
     source: DaqSession,
     chunk_size: int,
-    exc: NIDaqReadError | NIDaqTimeoutError,
+    exc: NIDaqReadError | NIDaqTransientError,
 ) -> DaqBlock:
     """Synthesise a zero-filled :class:`DaqBlock` with ``.error`` set.
 
@@ -443,7 +453,7 @@ async def _start_bridge_producer(
         # racing with this read returns immediately rather than blocking.
         try:
             arr = source._backend.read_block(source.raw_task, n, 0.0)  # pyright: ignore[reportPrivateUsage]
-        except (NIDaqReadError, NIDaqTimeoutError):
+        except (NIDaqReadError, NIDaqTransientError):
             # On error, enqueue the sentinel so the drainer exits cleanly
             # rather than spinning. The recorder __aexit__ will record the
             # error count via summary.errors_observed below.
@@ -548,7 +558,7 @@ def _build_block_from_array(
         msg = "bridge drainer received a non-array payload"
         raise NIDaqReadError(
             msg,
-            context=ErrorContext(task_name=source.spec.name, operation="record_bridge"),
+            context=ErrorContext(task_name=source.spec.name, command_name="record_bridge"),
         )
     read_started_at = datetime.now(UTC)
     monotonic_ns = time.monotonic_ns()

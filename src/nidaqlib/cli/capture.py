@@ -132,14 +132,14 @@ async def _capture_parquet(
 
     async with (
         await open_device(spec) as session,
-        record(session, chunk_size=chunk_size) as (rx, _summary),
+        record(session, chunk_size=chunk_size) as recording,
         ParquetSink(out) as sink,
     ):
         count = 0
 
         async def _bounded_pipe() -> None:
             nonlocal count
-            async for block in rx:
+            async for block in recording.stream:
                 await sink.write(block)
                 count += 1
                 if count >= blocks_target:
@@ -167,7 +167,7 @@ async def _capture_tdms(
     # keep the task running.
     async with (
         await open_device(spec) as session,
-        record(session, chunk_size=1) as (_rx, _summary),
+        record(session, chunk_size=1) as _recording,
     ):
         # `session` is used to construct the recorder context; once we're
         # inside, we just sleep — samples flow into the TDMS file via NI.

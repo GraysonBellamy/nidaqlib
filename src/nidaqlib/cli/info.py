@@ -15,8 +15,8 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from nidaqlib import __version__
-from nidaqlib.errors import NIDaqDependencyError, NIDaqError
-from nidaqlib.system import list_devices
+from nidaqlib.errors import NIDaqError
+from nidaqlib.system import find_devices
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -66,22 +66,24 @@ def _gather() -> dict[str, Any]:
         driver_version = None
     info["ni_driver_version"] = driver_version
 
-    devices: list[dict[str, Any]]
-    try:
-        devices = [
+    devices: list[dict[str, Any]] = []
+    for row in find_devices():
+        di = row.device_info
+        if not row.ok or di is None:
+            # Enumeration-level failures still surface here so the user sees
+            # ``nidaq-info`` failed for a clear reason rather than an empty list.
+            continue
+        devices.append(
             {
-                "name": d.name,
-                "product_type": d.product_type,
-                "serial_number": d.serial_number,
-                "ai_count": len(d.ai_physical_channels),
-                "ao_count": len(d.ao_physical_channels),
-                "di_count": len(d.di_lines),
-                "do_count": len(d.do_lines),
+                "name": di.name,
+                "product_type": di.product_type,
+                "serial_number": di.serial_number,
+                "ai_count": len(di.ai_physical_channels),
+                "ao_count": len(di.ao_physical_channels),
+                "di_count": len(di.di_lines),
+                "do_count": len(di.do_lines),
             }
-            for d in list_devices()
-        ]
-    except NIDaqDependencyError:
-        devices = []
+        )
     info["devices"] = devices
     return info
 

@@ -66,8 +66,9 @@ async def test_happy_path() -> None:
             chunk_size=64,
             buffer_size=128,
             use_callback_bridge=True,
-        ) as (stream, _summary),
+        ) as _rec,
     ):
+        stream, _summary = _rec.stream, _rec.summary
         backend.simulate_callbacks(session.raw_task, firings=100)
         with anyio.fail_after(2.0):
             async for block in stream:
@@ -100,7 +101,8 @@ async def test_clean_shutdown_drainer_blocked() -> None:
                 session,
                 chunk_size=64,
                 use_callback_bridge=True,
-            ) as (_stream, _summary):
+            ) as _rec2:
+                _stream, _summary = _rec2.stream, _rec2.summary
                 # Intentionally do not fire callbacks — drainer parks in get().
                 pass
     # Allow any background daemon teardown to settle; the drainer thread is
@@ -134,7 +136,8 @@ async def test_cancel_mid_stream_stop_then_unregister_then_close() -> None:
                 session,
                 chunk_size=32,
                 use_callback_bridge=True,
-            ) as (stream, _summary):
+            ) as _rec3:
+                stream, _summary = _rec3.stream, _rec3.summary
                 backend.simulate_callbacks(session.raw_task, firings=10_000, cadence_s=0.001)
                 count = 0
                 async for _block in stream:
@@ -170,8 +173,9 @@ async def test_register_must_precede_start() -> None:
             session,
             chunk_size=16,
             use_callback_bridge=True,
-        ) as (_stream, _summary),
+        ) as _rec4,
     ):
+        _stream, _summary = _rec4.stream, _rec4.summary
         del session  # only the operation log matters
     register_at = _operation_index(backend, "register_every_n_samples")
     start_at = _operation_index(backend, "start_task")
@@ -219,8 +223,9 @@ async def test_callback_survives_gc() -> None:
             session,
             chunk_size=16,
             use_callback_bridge=True,
-        ) as (stream, _summary),
+        ) as _rec5,
     ):
+        stream, _summary = _rec5.stream, _rec5.summary
         backend.simulate_callbacks(session.raw_task, firings=5)
         with anyio.fail_after(2.0):
             async for block in stream:

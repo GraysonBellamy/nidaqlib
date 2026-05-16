@@ -12,6 +12,7 @@ from nidaqlib.sync.daq import Daq
 from nidaqlib.sync.portal import SyncAsyncIterator, SyncPortal, run_sync
 from nidaqlib.sync.recording import (
     AcquisitionSummary,
+    SyncRecording,
     record,
     record_polled,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "SyncAsyncIterator",
     "SyncDaqSession",
     "SyncPortal",
+    "SyncRecording",
     "record",
     "record_polled",
     "run_sync",

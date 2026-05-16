@@ -79,8 +79,9 @@ async def test_record_short_circuits_on_log_only() -> None:
     backend = FakeDaqBackend()
     async with (
         await open_device(spec, backend=backend) as session,
-        record(session, chunk_size=100, buffer_size=2) as (rx, summary),
+        record(session, chunk_size=100, buffer_size=2) as _rec,
     ):
+        rx, summary = _rec.stream, _rec.summary
         blocks = [b async for b in rx]
         assert blocks == []
         assert summary.blocks_emitted == 0

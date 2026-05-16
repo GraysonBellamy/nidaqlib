@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from nidaqlib.sync.portal import SyncPortal
-    from nidaqlib.tasks.models import DaqBlock, DaqReading
+    from nidaqlib.tasks.models import DaqBlock, DaqReading, NIDaqSnapshot, TaskState
     from nidaqlib.tasks.session import DaqSession
     from nidaqlib.tasks.spec import TaskSpec
 
@@ -48,6 +48,19 @@ class SyncDaqSession:
     def raw_task(self) -> Any:
         """The underlying backend task handle (escape hatch — design §7.4)."""
         return self._session.raw_task
+
+    @property
+    def recoverable_error_count(self) -> int:
+        """Mirror of :attr:`DaqSession.recoverable_error_count`."""
+        return self._session.recoverable_error_count
+
+    def task_state(self) -> TaskState:
+        """Mirror of :meth:`DaqSession.task_state`."""
+        return self._session.task_state()
+
+    def snapshot(self) -> NIDaqSnapshot:
+        """Mirror of :meth:`DaqSession.snapshot` — I/O-free."""
+        return self._portal.call(self._session.snapshot)
 
     def start(self, *, confirm: bool = False) -> None:
         """Start or restart the underlying task."""

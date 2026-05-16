@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anyio
 
@@ -54,16 +54,14 @@ __all__ = ["DaqManager", "DeviceResult"]
 class DeviceResult[T]:
     """One per-task outcome from a manager group operation.
 
-    The name matches the ecosystem manager surface even though DAQ
-    granularity is one NI task per slot.
+    The mapping key carries the task name; this record carries only the
+    outcome. Use :meth:`success` / :meth:`failure` to construct.
 
     Attributes:
-        name: Manager-add name of the task.
         value: The operation's success value, or ``None`` on error.
         error: The wrapped :class:`NIDaqError`, or ``None`` on success.
     """
 
-    name: str
     value: T | None
     error: NIDaqError | None
 
@@ -71,6 +69,16 @@ class DeviceResult[T]:
     def ok(self) -> bool:
         """``True`` when the operation succeeded for this task."""
         return self.error is None
+
+    @staticmethod
+    def success[U](value: U) -> DeviceResult[U]:
+        """Build a successful result carrying ``value``."""
+        return DeviceResult(value=value, error=None)
+
+    @staticmethod
+    def failure(error: NIDaqError) -> DeviceResult[Any]:
+        """Build a failed result carrying ``error``."""
+        return DeviceResult(value=None, error=error)
 
 
 def _device_of(physical_channel: str) -> str:
@@ -232,7 +240,7 @@ class DaqManager:
         if self._closed:
             raise NIDaqTaskStateError(
                 "DaqManager is closed",
-                context=ErrorContext(task_name=name, operation="manager.add"),
+                context=ErrorContext(task_name=name, command_name="manager.add"),
             )
         if isinstance(source, DaqSession):
             spec = source.spec
@@ -246,7 +254,7 @@ class DaqManager:
                 if self._specs.get(name) is not spec and self._specs.get(name) != spec:
                     raise NIDaqTaskStateError(
                         f"task {name!r} already registered with a different spec",
-                        context=ErrorContext(task_name=name, operation="manager.add"),
+                        context=ErrorContext(task_name=name, command_name="manager.add"),
                     )
                 self._refcounts[name] = self._refcounts.get(name, 1) + 1
                 return existing
@@ -306,7 +314,7 @@ class DaqManager:
                 f"{sorted(channel_conflicts)!r}",
                 context=ErrorContext(
                     task_name=name,
-                    operation="manager.add",
+                    command_name="manager.add",
                     extra={"conflicts": channel_conflicts},
                 ),
             )
@@ -336,7 +344,7 @@ class DaqManager:
                 f"NI -50103.)",
                 context=ErrorContext(
                     task_name=name,
-                    operation="manager.add",
+                    command_name="manager.add",
                     extra={"module_conflicts": module_conflicts},
                 ),
             )
@@ -461,7 +469,7 @@ class DaqManager:
         if master in slaves:
             raise NIDaqTaskStateError(
                 f"task {master!r} cannot be both master and slave",
-                context=ErrorContext(task_name=master, operation="start_synchronized"),
+                context=ErrorContext(task_name=master, command_name="start_synchronized"),
             )
 
         policy = error_policy if error_policy is not None else self._error_policy
@@ -474,10 +482,10 @@ class DaqManager:
             try:
                 async with self._operation_locks(name):
                     await _configure_then_start(session, confirm=confirm)
-                results[name] = DeviceResult(name=name, value=None, error=None)
+                results[name] = DeviceResult.success(None)
                 armed.append(name)
             except NIDaqError as exc:
-                results[name] = DeviceResult(name=name, value=None, error=exc)
+                results[name] = DeviceResult.failure(exc)
                 errors.append(exc)
                 # Roll back: stop every slave that armed before this one,
                 # in reverse order. Best-effort — collect rollback errors
@@ -490,12 +498,10 @@ class DaqManager:
                     except NIDaqError as rollback_exc:
                         errors.append(rollback_exc)
                 # Do not start the master.
-                results[master] = DeviceResult(
-                    name=master,
-                    value=None,
-                    error=NIDaqTaskStateError(
+                results[master] = DeviceResult.failure(
+                    NIDaqTaskStateError(
                         f"master {master!r} not started: slave {name!r} failed to arm",
-                        context=ErrorContext(task_name=master, operation="start_synchronized"),
+                        context=ErrorContext(task_name=master, command_name="start_synchronized"),
                     ),
                 )
                 if policy is ErrorPolicy.RAISE:
@@ -510,9 +516,9 @@ class DaqManager:
         try:
             async with self._operation_locks(master):
                 await _configure_then_start(master_session, confirm=confirm)
-            results[master] = DeviceResult(name=master, value=None, error=None)
+            results[master] = DeviceResult.success(None)
         except NIDaqError as exc:
-            results[master] = DeviceResult(name=master, value=None, error=exc)
+            results[master] = DeviceResult.failure(exc)
             errors.append(exc)
             if policy is ErrorPolicy.RAISE:
                 raise BaseExceptionGroup(
@@ -628,9 +634,9 @@ class DaqManager:
             try:
                 async with self._operation_locks(name):
                     value = await fn(session)
-                results[name] = DeviceResult(name=name, value=value, error=None)
+                results[name] = DeviceResult.success(value)
             except NIDaqError as exc:
-                results[name] = DeviceResult(name=name, value=None, error=exc)
+                results[name] = DeviceResult.failure(exc)
                 if policy is ErrorPolicy.RAISE:
                     errors.append(exc)
 

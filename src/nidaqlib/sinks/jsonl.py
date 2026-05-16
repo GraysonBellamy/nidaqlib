@@ -3,7 +3,7 @@
 Each row stands alone; a record carrying a wider schema simply emits a
 wider object without affecting earlier or later rows. Refuses blocks by
 default; ``accept_blocks=True`` opts into per-sample scalarisation via
-:func:`block_to_long_rows` — same guard rails as :class:`CsvSink`.
+:func:`block_to_rows` — same guard rails as :class:`CsvSink`.
 
 Stdlib-only.
 """
@@ -15,14 +15,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
 from nidaqlib.errors import NIDaqSinkSchemaError
-from nidaqlib.sinks.base import block_to_long_rows, reading_to_row, sample_to_row
+from nidaqlib.sinks.base import block_to_rows, reading_to_row
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from io import TextIOWrapper
     from types import TracebackType
 
-    from nidaqlib.tasks.models import DaqBlock, DaqReading, DaqSample
+    from nidaqlib.tasks.models import DaqBlock, DaqReading
 
 
 __all__ = ["JsonlSink"]
@@ -34,7 +34,7 @@ class JsonlSink:
     Args:
         path: Destination file. Created or overwritten on :meth:`open`.
         accept_blocks: When ``True``, :meth:`write` calls
-            :func:`block_to_long_rows`. Default ``False`` raises
+            :func:`block_to_rows`. Default ``False`` raises
             :class:`NIDaqSinkSchemaError`.
     """
 
@@ -55,40 +55,24 @@ class JsonlSink:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._file = self._path.open("w", encoding="utf-8", newline="")
 
-    async def write_many(
-        self,
-        items: Sequence[DaqReading] | Sequence[DaqSample],
-    ) -> None:
-        """Serialise each record as one JSON object per line."""
+    async def write_many(self, items: Sequence[DaqReading]) -> None:
+        """Serialise each :class:`DaqReading` as one JSON object per line."""
         if self._file is None:
             raise RuntimeError("JsonlSink: write_many called before open()")
         if not items:
             return
-
-        from nidaqlib.tasks.models import DaqReading, DaqSample  # noqa: PLC0415
-
-        first = items[0]
-        if isinstance(first, DaqReading):
-            rows = [reading_to_row(item) for item in items]  # type: ignore[arg-type]
-        elif isinstance(first, DaqSample):  # pyright: ignore[reportUnnecessaryIsInstance]
-            rows = [sample_to_row(item) for item in items]  # type: ignore[arg-type]
-        else:  # pragma: no cover - defensive
-            raise NIDaqSinkSchemaError(
-                f"JsonlSink.write_many: unsupported record type {type(first).__name__}"
-            )
-        self._write_rows(rows)
+        self._write_rows([reading_to_row(item) for item in items])
 
     async def write(self, block: DaqBlock) -> None:
         """Refuse blocks unless ``accept_blocks=True``."""
         if not self._accept_blocks:
             raise NIDaqSinkSchemaError(
                 "JsonlSink refuses DaqBlock by default — pass accept_blocks=True "
-                "to scalarise via block_to_long_rows."
+                "to scalarise via block_to_rows."
             )
         if self._file is None:
             raise RuntimeError("JsonlSink: write called before open()")
-        rows = [sample_to_row(s) for s in block_to_long_rows(block)]
-        self._write_rows(rows)
+        self._write_rows(block_to_rows(block))
 
     def _write_rows(self, rows: list[dict[str, float | int | str | bool | None]]) -> None:
         if not rows:

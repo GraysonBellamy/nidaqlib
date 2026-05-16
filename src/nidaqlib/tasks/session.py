@@ -23,13 +23,14 @@ from nidaqlib.errors import (
     NIDaqTaskStateError,
     NIDaqValidationError,
 )
-from nidaqlib.tasks.models import DaqBlock, DaqReading
+from nidaqlib.tasks.models import DaqBlock, DaqReading, NIDaqSnapshot, TaskState
 from nidaqlib.tasks.spec import AcquisitionMode
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from nidaqlib.backend.base import CallbackHandle, DaqBackend
+    from nidaqlib.system.models import DeviceInfo
     from nidaqlib.tasks.spec import TaskSpec
 
 
@@ -71,6 +72,16 @@ class DaqSession:
         self._task_started_at: datetime | None = None
         self._first_sample_index: int = 0
         self._block_index: int = 0
+        # Counter incremented every time the recorder swallows a
+        # NIDaqTransientError under ErrorPolicy.RETURN. Reset on task
+        # rebuild (a fresh configure() call).
+        self._recoverable_error_count: int = 0
+        # Cached identity, populated by configure_sync (one backend call per
+        # task build). Keeps :meth:`snapshot` I/O-free.
+        self._device_info: DeviceInfo | None = None
+        # Last enriched error context observed; updated when the session
+        # surfaces a NIDaqError from its own methods. Snapshots embed this.
+        self._last_error_context: ErrorContext | None = None
         # Bridge bookkeeping — populated only when streaming/block.py opts
         # into the every-N-samples callback path.
         self._callback_handle: CallbackHandle | None = None
@@ -123,7 +134,7 @@ class DaqSession:
         if self._task is None:
             raise NIDaqTaskStateError(
                 "raw_task is unavailable until the session is configured",
-                context=ErrorContext(task_name=self._spec.name, operation="raw_task"),
+                context=ErrorContext(task_name=self._spec.name, command_name="raw_task"),
             )
         return self._task
 
@@ -139,6 +150,64 @@ class DaqSession:
         ``task_started_at + first_sample_index / rate_hz`` (design doc §8.7).
         """
         return self._task_started_at
+
+    @property
+    def recoverable_error_count(self) -> int:
+        """Count of :class:`NIDaqTransientError` events swallowed under RETURN policy.
+
+        Reset to ``0`` on every :meth:`configure` (i.e. fresh task build).
+        """
+        return self._recoverable_error_count
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Cached identity for the device backing this task; ``None`` before configure."""
+        return self._device_info
+
+    def task_state(self) -> TaskState:
+        """Return the coarse :class:`TaskState` projection of this session.
+
+        I/O-free — derived from internal lifecycle flags.
+        """
+        if self._closed:
+            return TaskState.CLOSED
+        if self._started:
+            return TaskState.RUNNING
+        if self._configured:
+            # `configured-but-not-started` covers both "never started" and
+            # "started then stopped". We distinguish by whether the start
+            # anchor was ever set.
+            return TaskState.STOPPED if self._task_started_at is not None else TaskState.CONFIGURED
+        return TaskState.CREATED
+
+    async def snapshot(self) -> NIDaqSnapshot:
+        """Return an :class:`NIDaqSnapshot` of this session's current state.
+
+        No I/O — built from the cached :class:`DeviceInfo` (one backend call
+        at configure time) and the session's own lifecycle flags. Safe to
+        call from any thread / event loop / callback context.
+        """
+        info = self._device_info
+        timing = self._spec.timing
+        return NIDaqSnapshot(
+            name=self._spec.name,
+            model=info.product_type if info is not None else None,
+            firmware=None,
+            serial=info.serial_number if info is not None else None,
+            connected=self._configured and not self._closed,
+            last_error=self._last_error_context,
+            recoverable_error_count=self._recoverable_error_count,
+            captured_at=datetime.now(UTC),
+            task_name=self._spec.name,
+            task_state=self.task_state(),
+            channel_count=len(self._spec.channels),
+            timing_mode=timing.mode.value if timing is not None else None,
+            rate_hz=timing.rate_hz if timing is not None else None,
+            physical_channels=tuple(ch.physical_channel for ch in self._spec.channels),
+            product_type=info.product_type if info is not None else None,
+            chassis=None,
+            physical_module=info.name if info is not None else None,
+        )
 
     # -- Lifecycle -----------------------------------------------------------
 
@@ -158,12 +227,12 @@ class DaqSession:
         if self._closed:
             raise NIDaqTaskStateError(
                 f"session for task {self._spec.name!r} is closed",
-                context=ErrorContext(task_name=self._spec.name, operation="configure"),
+                context=ErrorContext(task_name=self._spec.name, command_name="configure"),
             )
         if self._configured:
             raise NIDaqTaskStateError(
                 f"session for task {self._spec.name!r} is already configured",
-                context=ErrorContext(task_name=self._spec.name, operation="configure"),
+                context=ErrorContext(task_name=self._spec.name, command_name="configure"),
             )
         async with self._lock:
             await run_sync(self._configure_sync)
@@ -190,17 +259,17 @@ class DaqSession:
         if self._closed:
             raise NIDaqTaskStateError(
                 f"session for task {self._spec.name!r} is closed",
-                context=ErrorContext(task_name=self._spec.name, operation="start"),
+                context=ErrorContext(task_name=self._spec.name, command_name="start"),
             )
         if not self._configured:
             raise NIDaqTaskStateError(
                 f"session for task {self._spec.name!r} must be configured before start",
-                context=ErrorContext(task_name=self._spec.name, operation="start"),
+                context=ErrorContext(task_name=self._spec.name, command_name="start"),
             )
         if self._started:
             raise NIDaqTaskStateError(
                 f"session for task {self._spec.name!r} is already started",
-                context=ErrorContext(task_name=self._spec.name, operation="start"),
+                context=ErrorContext(task_name=self._spec.name, command_name="start"),
             )
         self._validate_start_safety(confirm=confirm)
         async with self._lock:
@@ -245,6 +314,12 @@ class DaqSession:
             self._backend.close_task(task)
             raise
         self._task = task
+        # Cache identity once per task build — keeps snapshot() I/O-free.
+        first_channel = self._spec.channels[0].physical_channel if self._spec.channels else ""
+        device_name = first_channel.split("/", 1)[0] if "/" in first_channel else first_channel
+        self._device_info = self._backend.device_info(device_name) if device_name else None
+        # Reset transient-error counter on a fresh task build.
+        self._recoverable_error_count = 0
 
     async def stop(self) -> None:
         """Stop the underlying task. Idempotent for not-yet-started sessions.
@@ -272,7 +347,7 @@ class DaqSession:
             raise NIDaqTaskStateError(
                 "cannot close a session while an every-N-samples callback bridge is active; "
                 "exit the record(..., use_callback_bridge=True) context first",
-                context=ErrorContext(task_name=self._spec.name, operation="close"),
+                context=ErrorContext(task_name=self._spec.name, command_name="close"),
             )
         self._closed = True
         if self._task is None:
@@ -359,7 +434,7 @@ class DaqSession:
         if timing is None or timing.mode is not AcquisitionMode.FINITE:
             raise NIDaqTaskStateError(
                 f"acquire() requires Timing.mode=FINITE; got {timing.mode if timing else None}",
-                context=ErrorContext(task_name=self._spec.name, operation="acquire"),
+                context=ErrorContext(task_name=self._spec.name, command_name="acquire"),
             )
         block = await self.read_block(samples_per_channel, timeout=timeout)
         await self.stop()
@@ -391,7 +466,7 @@ class DaqSession:
             raise NIDaqTaskStateError(
                 f"poll() is invalid for {timing.mode.value} tasks; use record() and "
                 "inspect the most recent DaqBlock instead",
-                context=ErrorContext(task_name=self._spec.name, operation="poll"),
+                context=ErrorContext(task_name=self._spec.name, command_name="poll"),
             )
         eff_timeout = timeout if timeout is not None else self._timeout
         async with self._lock:
@@ -405,8 +480,8 @@ class DaqSession:
             )
             received_at = datetime.now(UTC)
             monotonic_ns_end = time.monotonic_ns()
-        midpoint_at = requested_at + (received_at - requested_at) / 2
-        midpoint_monotonic = (monotonic_ns_start + monotonic_ns_end) // 2
+        t_utc = requested_at + (received_at - requested_at) / 2
+        t_mono_ns = (monotonic_ns_start + monotonic_ns_end) // 2
         # data shape is (n_channels, 1) — squeeze to per-channel scalars.
         names = self._channel_names()
         units = self._channel_units()
@@ -418,10 +493,11 @@ class DaqSession:
             task=self._spec.name,
             values=values,
             units=units,
+            t_mono_ns=t_mono_ns,
+            t_utc=t_utc,
+            t_midpoint_mono_ns=None,
             requested_at=requested_at,
             received_at=received_at,
-            midpoint_at=midpoint_at,
-            monotonic_ns=midpoint_monotonic,
             latency_s=(received_at - requested_at).total_seconds(),
             metadata=dict(self._spec.metadata),
             error=None,
@@ -485,11 +561,11 @@ class DaqSession:
                 raise NIDaqValidationError(
                     "counter-output pulse trains are controlled by start()/stop(), not write(); "
                     "start them with confirm=True",
-                    context=ErrorContext(task_name=self._spec.name, operation="write"),
+                    context=ErrorContext(task_name=self._spec.name, command_name="write"),
                 )
             raise NIDaqValidationError(
                 f"task {self._spec.name!r} has no output channels to write",
-                context=ErrorContext(task_name=self._spec.name, operation="write"),
+                context=ErrorContext(task_name=self._spec.name, command_name="write"),
             )
         has_ao = any(isinstance(ch, AnalogOutputVoltage) for ch in output_channels)
         has_do = any(isinstance(ch, DigitalOutput) for ch in output_channels)
@@ -497,7 +573,7 @@ class DaqSession:
             raise NIDaqValidationError(
                 "write() does not support mixing analog-output and digital-output "
                 "channels in one task",
-                context=ErrorContext(task_name=self._spec.name, operation="write"),
+                context=ErrorContext(task_name=self._spec.name, command_name="write"),
             )
 
         target_names = {ch.display_name for ch in output_channels}
@@ -508,7 +584,7 @@ class DaqSession:
             raise NIDaqValidationError(
                 f"write keys do not match task outputs (unknown={sorted(unknown)!r}, "
                 f"missing={sorted(missing)!r})",
-                context=ErrorContext(task_name=self._spec.name, operation="write"),
+                context=ErrorContext(task_name=self._spec.name, command_name="write"),
             )
 
         needs_confirm = any(getattr(ch, "requires_confirm", False) for ch in output_channels)
@@ -516,7 +592,7 @@ class DaqSession:
             raise NIDaqConfirmationRequiredError(
                 f"task {self._spec.name!r}: write requires confirm=True (one or more "
                 "channels are marked requires_confirm)",
-                context=ErrorContext(task_name=self._spec.name, operation="write"),
+                context=ErrorContext(task_name=self._spec.name, command_name="write"),
             )
 
         for ch in output_channels:
@@ -533,7 +609,7 @@ class DaqSession:
                             task_name=self._spec.name,
                             channel_name=ch.display_name,
                             physical_channel=ch.physical_channel,
-                            operation="write",
+                            command_name="write",
                         ),
                     )
 
@@ -568,12 +644,12 @@ class DaqSession:
         if self._closed:
             raise NIDaqTaskStateError(
                 f"session for task {self._spec.name!r} is closed",
-                context=ErrorContext(task_name=self._spec.name, operation=op),
+                context=ErrorContext(task_name=self._spec.name, command_name=op),
             )
         if not self._started or self._task is None:
             raise NIDaqTaskStateError(
                 f"session for task {self._spec.name!r} is not started",
-                context=ErrorContext(task_name=self._spec.name, operation=op),
+                context=ErrorContext(task_name=self._spec.name, command_name=op),
             )
 
     def _validate_start_safety(self, *, confirm: bool) -> None:
@@ -594,7 +670,7 @@ class DaqSession:
             raise NIDaqConfirmationRequiredError(
                 f"starting task {self._spec.name!r} requires confirm=True; "
                 f"counter-output channels would actuate immediately: {actuating!r}",
-                context=ErrorContext(task_name=self._spec.name, operation="start"),
+                context=ErrorContext(task_name=self._spec.name, command_name="start"),
             )
 
     def _require_analog_input_task(self, op: str) -> None:
@@ -613,7 +689,7 @@ class DaqSession:
             raise NIDaqValidationError(
                 f"{op} currently supports analog-input tasks only; unsupported channels: "
                 f"{unsupported!r}",
-                context=ErrorContext(task_name=self._spec.name, operation=op),
+                context=ErrorContext(task_name=self._spec.name, command_name=op),
             )
 
     def _channel_names(self) -> tuple[str, ...]:
@@ -634,7 +710,7 @@ class DaqSession:
         if self._task_started_at is None:
             raise NIDaqConfigurationError(
                 "task_started_at is unset; this is an internal lifecycle bug",
-                context=ErrorContext(task_name=self._spec.name, operation="_build_block"),
+                context=ErrorContext(task_name=self._spec.name, command_name="_build_block"),
             )
         timing = self._spec.timing
         rate_hz = (
@@ -642,7 +718,12 @@ class DaqSession:
             if timing is not None and timing.mode is not AcquisitionMode.ON_DEMAND
             else None
         )
-        dt_s = (1.0 / rate_hz) if rate_hz else None
+        block_period_ns = int(1e9 / rate_hz) if rate_hz else None
+        if block_period_ns is not None:
+            midpoint_offset_ns = block_period_ns * (samples_per_channel - 1) // 2
+            t_midpoint_mono_ns: int | None = monotonic_ns + midpoint_offset_ns
+        else:
+            t_midpoint_mono_ns = None
         block = DaqBlock(
             device=self._spec.name,
             task=self._spec.name,
@@ -651,11 +732,12 @@ class DaqSession:
             block_index=self._block_index,
             first_sample_index=self._first_sample_index,
             samples_per_channel=samples_per_channel,
-            sample_rate_hz=rate_hz,
-            dt_s=dt_s,
+            block_period_ns=block_period_ns,
+            t_mono_ns=monotonic_ns,
+            t_utc=read_started_at,
+            t_midpoint_mono_ns=t_midpoint_mono_ns,
             task_started_at=self._task_started_at,
             t0=read_started_at,
-            monotonic_ns=monotonic_ns,
             read_started_at=read_started_at,
             read_finished_at=read_finished_at,
             elapsed_s=(read_finished_at - read_started_at).total_seconds(),

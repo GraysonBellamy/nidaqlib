@@ -2,28 +2,29 @@
 
 Two helpers:
 
-- :func:`list_devices` — returns one :class:`DeviceInfo` per visible
+- :func:`find_devices` — returns one :class:`DiscoveryResult` per visible
+  device, with a populated :class:`DeviceInfo` on success rows.
+- :func:`list_physical_channels` — list AI physical channel names for one
   device.
-- :func:`list_physical_channels` — list AI / AO / counter channel names
-  for one device.
 
-The functions never raise on a clean system that has no NI hardware;
-they return an empty list. Errors during the NI call are wrapped into
-:class:`NIDaqBackendError`.
+:func:`find_devices` **never raises**. A clean system with no NI hardware
+returns an empty list; an enumeration-level driver failure surfaces as a
+single ``ok=False`` row.
 """
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from nidaqlib.errors import ErrorContext, NIDaqBackendError, NIDaqDependencyError
-from nidaqlib.system.models import DeviceInfo
+from nidaqlib.system.models import DeviceInfo, DiscoveryResult, NIDaqDiscoveryResult
 
 if TYPE_CHECKING:
     from typing import Any
 
 
-__all__ = ["list_devices", "list_physical_channels"]
+__all__ = ["find_devices", "list_physical_channels"]
 
 
 def _import_nidaqmx() -> Any:
@@ -34,58 +35,122 @@ def _import_nidaqmx() -> Any:
     return nidaqmx
 
 
+def _safe_attr(obj: Any, name: str, default: Any = None) -> Any:
+    """Return an NI object's attribute when supported, otherwise ``default``."""
+    try:
+        return getattr(obj, name)
+    except Exception:
+        return default
+
+
 def _channel_names(collection: Any) -> tuple[str, ...]:
     """Pull `.name` off a NI channel collection, handling missing attributes."""
     try:
-        return tuple(getattr(item, "name", str(item)) for item in collection)
+        return tuple(str(_safe_attr(item, "name", str(item))) for item in collection)
     except Exception:  # pragma: no cover - defensive against odd NI shapes
         return ()
 
 
-def list_devices() -> list[DeviceInfo]:
-    """Enumerate visible NI devices and their physical-channel inventories.
+def _chassis_of(dev: Any) -> str | None:
+    """Best-effort chassis name for a cDAQ module, ``None`` for anything else.
+
+    NI raises ``-200197`` ("Device does not support this property") when
+    asked for ``compact_daq_chassis_device`` on a non-module device. We
+    swallow the error and return ``None`` — discovery must not raise.
+    """
+    chassis = _safe_attr(dev, "compact_daq_chassis_device")
+    if chassis is None:
+        return None
+    name = _safe_attr(chassis, "name")
+    return str(name) if name is not None else None
+
+
+def _physical_module_of(dev: Any) -> str | None:
+    """Best-effort module slot identifier; same string as ``name`` for cDAQ mods."""
+    name = _safe_attr(dev, "name")
+    return str(name) if name is not None else None
+
+
+def find_devices() -> list[DiscoveryResult]:
+    """Enumerate NI DAQ devices visible to the driver. Never raises.
 
     Returns:
-        One :class:`DeviceInfo` per device. Empty list when no NI hardware
-        is present.
-
-    Raises:
-        NIDaqBackendError: NI raised an unexpected error during enumeration.
-        NIDaqDependencyError: ``nidaqmx-python`` is not installed.
+        One :class:`NIDaqDiscoveryResult` per device. Empty list when no
+        NI hardware is present. On enumeration-level failure (driver
+        missing, system call raises), returns a single ``ok=False`` row
+        with ``error`` populated.
     """
-    nidaqmx = _import_nidaqmx()
+    try:
+        nidaqmx = _import_nidaqmx()
+    except NIDaqDependencyError as exc:
+        return [
+            DiscoveryResult(
+                ok=False,
+                port="",
+                error=exc,
+                elapsed_s=0.0,
+            )
+        ]
+
+    started = time.monotonic()
     try:
         system = nidaqmx.system.System.local()
         devices = list(system.devices)
-    except nidaqmx.errors.DaqError as exc:  # pragma: no cover - hardware path
-        raise NIDaqBackendError(
+    except nidaqmx.errors.DaqError as exc:  # pragma: no cover — hardware path
+        elapsed = time.monotonic() - started
+        wrapped = NIDaqBackendError(
             "failed to enumerate NI devices",
             context=ErrorContext(
-                operation="list_devices",
+                command_name="find_devices",
                 ni_error_code=getattr(exc, "error_code", None),
             ),
-        ) from exc
-
-    return [
-        DeviceInfo(
-            name=dev.name,
-            product_type=getattr(dev, "product_type", None),
-            serial_number=str(getattr(dev, "serial_num", None) or "") or None,
-            ai_physical_channels=_channel_names(getattr(dev, "ai_physical_chans", ())),
-            ao_physical_channels=_channel_names(getattr(dev, "ao_physical_chans", ())),
-            di_lines=_channel_names(getattr(dev, "di_lines", ())),
-            do_lines=_channel_names(getattr(dev, "do_lines", ())),
-            ci_physical_channels=_channel_names(getattr(dev, "ci_physical_chans", ())),
-            co_physical_channels=_channel_names(getattr(dev, "co_physical_chans", ())),
         )
-        for dev in devices
-    ]
+        wrapped.__cause__ = exc
+        return [
+            DiscoveryResult(
+                ok=False,
+                port="",
+                error=wrapped,
+                elapsed_s=elapsed,
+            )
+        ]
+
+    results: list[DiscoveryResult] = []
+    for dev in devices:
+        per_started = time.monotonic()
+        name = str(_safe_attr(dev, "name", ""))
+        product_type = _safe_attr(dev, "product_type")
+        serial_num = _safe_attr(dev, "serial_num")
+        info = DeviceInfo(
+            name=name,
+            product_type=str(product_type) if product_type is not None else None,
+            serial_number=str(serial_num or "") or None,
+            ai_physical_channels=_channel_names(_safe_attr(dev, "ai_physical_chans", ())),
+            ao_physical_channels=_channel_names(_safe_attr(dev, "ao_physical_chans", ())),
+            di_lines=_channel_names(_safe_attr(dev, "di_lines", ())),
+            do_lines=_channel_names(_safe_attr(dev, "do_lines", ())),
+            ci_physical_channels=_channel_names(_safe_attr(dev, "ci_physical_chans", ())),
+            co_physical_channels=_channel_names(_safe_attr(dev, "co_physical_chans", ())),
+        )
+        results.append(
+            NIDaqDiscoveryResult(
+                ok=True,
+                port=name,
+                device_info=info,
+                product_type=info.product_type,
+                serial_number=info.serial_number,
+                chassis=_chassis_of(dev),
+                physical_module=_physical_module_of(dev),
+                elapsed_s=time.monotonic() - per_started,
+            )
+        )
+    return results
 
 
 def list_physical_channels(device: str) -> tuple[str, ...]:
     """Return AI physical channel names for ``device`` (e.g. ``"Dev1"``).
 
-    For inventories of AO / DI / DO / counters, use :func:`list_devices` and
+    For AO / DI / DO / counter inventories, use :func:`find_devices` and
     inspect the returned :class:`DeviceInfo`.
 
     Raises:
@@ -99,7 +164,7 @@ def list_physical_channels(device: str) -> tuple[str, ...]:
         raise NIDaqBackendError(
             f"failed to list physical channels for {device!r}",
             context=ErrorContext(
-                operation="list_physical_channels",
+                command_name="list_physical_channels",
                 ni_error_code=getattr(exc, "error_code", None),
             ),
         ) from exc
