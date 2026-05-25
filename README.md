@@ -1,7 +1,7 @@
 # nidaqlib
 
 [![CI](https://github.com/GraysonBellamy/nidaqlib/actions/workflows/ci.yml/badge.svg)](https://github.com/GraysonBellamy/nidaqlib/actions/workflows/ci.yml)
-[![Docs](https://github.com/GraysonBellamy/nidaqlib/actions/workflows/docs.yml/badge.svg)](https://GraysonBellamy.github.io/nidaqlib/)
+[![Docs](https://github.com/GraysonBellamy/nidaqlib/actions/workflows/docs.yml/badge.svg)](https://graysonbellamy.github.io/nidaqlib/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Experiment-facing NI-DAQmx acquisition tools for Python.
@@ -73,7 +73,7 @@ anyio.run(main)
 
 ## Documentation
 
-Full docs at <https://GraysonBellamy.github.io/nidaqlib/>.
+Full docs at <https://graysonbellamy.github.io/nidaqlib/>.
 
 ## License
 

@@ -56,7 +56,7 @@ nidaq-info = "nidaqlib.cli.info:main"
 [project.urls]
 Homepage = "https://github.com/GraysonBellamy/nidaqlib"
 Repository = "https://github.com/GraysonBellamy/nidaqlib"
-Documentation = "https://GraysonBellamy.github.io/nidaqlib/"
+Documentation = "https://graysonbellamy.github.io/nidaqlib/"
 Issues = "https://github.com/GraysonBellamy/nidaqlib/issues"
 Changelog = "https://github.com/GraysonBellamy/nidaqlib/blob/main/CHANGELOG.md"
 
