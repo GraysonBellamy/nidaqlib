@@ -1,3 +1,7 @@
+---
+description: Log NI-DAQmx acquisition data to TDMS, Parquet, SQLite, Postgres, CSV, or JSONL using nidaqlib's pluggable sinks and acquisition manager.
+---
+
 # Sinks and logging
 
 `nidaqlib` has three input shapes (`DaqReading`, `DaqSample`, `DaqBlock`)

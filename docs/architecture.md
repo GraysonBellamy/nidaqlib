@@ -1,3 +1,7 @@
+---
+description: nidaqlib architecture — backend abstraction over nidaqmx-python, task lifecycle, channel and timing specs, streaming pipeline, sinks, and sync facade.
+---
+
 # Architecture
 
 `nidaqlib` is a thin async layer over `nidaqmx-python`. The guiding

@@ -1,3 +1,7 @@
+---
+description: Configure analog input, thermocouple, voltage, and digital channels in nidaqlib with typed ChannelSpec objects and per-channel scaling.
+---
+
 # Channels
 
 A `ChannelSpec` is a frozen, kw-only dataclass describing one NI physical

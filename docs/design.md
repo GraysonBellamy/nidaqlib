@@ -1,3 +1,7 @@
+---
+description: nidaqlib design document — typed acquisition layer over nidaqmx-python with declarative specs, structured errors, and a shared async/sync surface.
+---
+
 # `nidaqlib` Design Document
 
 **Status:** Definitive design (v1) — supersedes prior analysis notes  

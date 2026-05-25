@@ -1,3 +1,7 @@
+---
+description: Bench playbook for validating nidaqlib against real NI thermocouple modules (NI-9211/9212/9213/9214, USB-9211) with the integration test suite.
+---
+
 # Hardware Day — Thermocouple Module Playbook
 
 A bench-runnable playbook for validating `nidaqlib` against real NI hardware,

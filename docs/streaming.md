@@ -1,3 +1,7 @@
+---
+description: Stream NI-DAQmx samples through nidaqlib's block-oriented recorders into sinks with backpressure handling for finite and continuous acquisitions.
+---
+
 # Streaming
 
 `nidaqlib` ships **two recorders, one per acquisition model**. They

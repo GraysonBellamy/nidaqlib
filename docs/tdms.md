@@ -1,3 +1,7 @@
+---
+description: Write NI TDMS files from nidaqlib acquisitions — group/channel layout, properties, and compatibility with LabVIEW and DIAdem readers.
+---
+
 # TDMS
 
 TDMS is first-class but driver-side — `nidaqmx-python` already exposes

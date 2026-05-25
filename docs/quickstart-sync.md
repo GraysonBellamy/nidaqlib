@@ -1,3 +1,7 @@
+---
+description: Run your first synchronous NI-DAQmx acquisition with nidaqlib — the blocking sync facade wraps the async core and shares the same TaskSpec types.
+---
+
 # Quickstart — sync
 
 The sync facade lives at `nidaqlib.sync` and wraps the async core through

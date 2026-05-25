@@ -1,3 +1,7 @@
+---
+description: nidaqlib is a typed, async/sync NI-DAQmx acquisition layer for Python — declarative task specs, block-oriented reads, TDMS/Parquet logging, and hardware-free tests.
+---
+
 # nidaqlib
 
 Experiment-facing NI-DAQmx acquisition tools for Python.

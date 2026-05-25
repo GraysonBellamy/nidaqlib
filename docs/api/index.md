@@ -1,3 +1,7 @@
+---
+description: API reference for nidaqlib — auto-generated from Google-style docstrings via mkdocstrings, covering tasks, channels, streaming, sinks, and more.
+---
+
 # API reference
 
 API documentation is auto-generated from docstrings via

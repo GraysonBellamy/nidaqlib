@@ -1,3 +1,7 @@
+---
+description: Safety guarantees in nidaqlib for DAQ outputs that drive heaters, valves, and igniters — deterministic teardown and hardware release on errors.
+---
+
 # Safety
 
 DAQ outputs can drive heaters, valves, igniters, regulators, and other

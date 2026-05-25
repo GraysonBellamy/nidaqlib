@@ -1,3 +1,7 @@
+---
+description: Test nidaqlib acquisition code without NI hardware using the FakeDaqBackend, recorded fixtures, and deterministic time sources.
+---
+
 # Testing
 
 `FakeDaqBackend` supports hardware-free unit tests. See [design doc §21](design.md).

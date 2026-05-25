@@ -1,3 +1,7 @@
+---
+description: Configure sample rates, clock sources, sample modes, and triggers in nidaqlib Timing specs for finite and continuous NI-DAQmx acquisitions.
+---
+
 # Timing
 
 `nidaqlib` exposes three timing concepts. They compose: a `Timing` covers

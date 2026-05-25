@@ -1,3 +1,7 @@
+---
+description: Install nidaqlib with uv or pip, add optional extras for Parquet/SQLite/Postgres sinks, and verify the NI-DAQmx driver for hardware-free or real-device use.
+---
+
 # Installation
 
 ```bash

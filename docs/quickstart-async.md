@@ -1,3 +1,7 @@
+---
+description: Run your first async NI-DAQmx acquisition with nidaqlib — build a TaskSpec, await block reads, and handle structured errors in a few lines.
+---
+
 # Quickstart — async
 
 `nidaqlib` is async-first. This page walks through:

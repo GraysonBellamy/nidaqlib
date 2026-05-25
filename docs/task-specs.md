@@ -1,3 +1,7 @@
+---
+description: Define NI-DAQmx acquisitions declaratively with nidaqlib TaskSpec — channels, timing, triggers, and validated configuration before the hardware bind.
+---
+
 # Task specs
 
 `TaskSpec` is the declarative configuration object for one NI task. See
