@@ -88,7 +88,7 @@ async def test_read_block_does_not_block_event_loop() -> None:
                 await stop.wait()
 
     async with await open_device(spec, backend=spy) as session, anyio.create_task_group() as tg:
-        tg.start_soon(_heartbeat)
+        _ = tg.start_soon(_heartbeat)
         with anyio.fail_after(2.0):
             # Issue one slow read that takes 500 ms.
             await session.read_block(1000)

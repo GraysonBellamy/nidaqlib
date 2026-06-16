@@ -642,7 +642,7 @@ class DaqManager:
 
         async with anyio.create_task_group() as tg:
             for name in targets:
-                tg.start_soon(_run_one, name)
+                _ = tg.start_soon(_run_one, name)
 
         if policy is ErrorPolicy.RAISE and errors:
             raise BaseExceptionGroup(f"DaqManager.{op} failed for one or more tasks", errors)

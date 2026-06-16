@@ -251,7 +251,7 @@ async def record(
         if use_callback_bridge:
             await _start_bridge_producer(tg, source, tx, drop_rx, summary, chunk_size, overflow)
         else:
-            tg.start_soon(
+            _ = tg.start_soon(
                 _blocking_producer,
                 source,
                 tx,
@@ -266,7 +266,7 @@ async def record(
             yield Recording(stream=rx, summary=summary, rate_hz=rate_hz)
         finally:
             await tx.aclose()
-            tg.cancel_scope.cancel()
+            tg.cancel()
     summary.finished_at = datetime.now(UTC)
 
 
@@ -535,8 +535,8 @@ async def _start_bridge_producer(
                 chunk_q.put_nowait(_SENTINEL)
                 await drain_done.wait()
 
-    tg.start_soon(_drain)
-    tg.start_soon(_cleanup_on_exit)
+    _ = tg.start_soon(_drain)
+    _ = tg.start_soon(_cleanup_on_exit)
 
 
 def _build_block_from_array(

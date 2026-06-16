@@ -185,9 +185,9 @@ async def main() -> None:
                     n = await _drain_daq_to_parquet(daq_stream, parquet_path)
                     print(f"daq blocks_written: {n}")
 
-            tg.start_soon(_drain_mfc)
-            tg.start_soon(_drain_bal)
-            tg.start_soon(_drain_daq)
+            _ = tg.start_soon(_drain_mfc)
+            _ = tg.start_soon(_drain_bal)
+            _ = tg.start_soon(_drain_daq)
 
     elapsed = (datetime.now(UTC) - started).total_seconds()
     print(f"\nrun finished in {elapsed:.1f}s")
