@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://graysonbellamy.github.io/nidaqlib/sitemap.xml
+Sitemap: https://nidaqlib.graysonbellamy.dev/sitemap.xml
