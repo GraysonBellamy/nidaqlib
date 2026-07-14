@@ -31,7 +31,7 @@ def test_kw_only_construction() -> None:
     with pytest.raises(TypeError):
         # Positional construction must fail at runtime; the multiple type-check
         # errors are intentional and are silenced for the whole call.
-        ThermocoupleInput("Dev1/ai0", ThermocoupleType.K, 0.0, 100.0)  # type: ignore[call-arg, arg-type, misc]  # pyright: ignore[reportCallIssue, reportArgumentType]
+        ThermocoupleInput("Dev1/ai0", ThermocoupleType.K, 0.0, 100.0)  # type: ignore[call-arg, arg-type]  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
 def test_frozen() -> None:

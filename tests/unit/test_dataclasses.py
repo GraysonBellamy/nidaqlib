@@ -49,17 +49,17 @@ def _make_spec() -> TaskSpec:
 
 def test_taskspec_is_kw_only() -> None:
     with pytest.raises(TypeError):
-        TaskSpec("ai", [])  # type: ignore[misc]
+        TaskSpec("ai", [])  # type: ignore[call-arg]
 
 
 def test_timing_is_kw_only() -> None:
     with pytest.raises(TypeError):
-        Timing(1000.0)  # type: ignore[misc]
+        Timing(1000.0)  # type: ignore[call-arg]
 
 
 def test_analog_input_voltage_is_kw_only() -> None:
     with pytest.raises(TypeError):
-        AnalogInputVoltage("Dev1/ai0")  # type: ignore[misc]
+        AnalogInputVoltage("Dev1/ai0")  # type: ignore[call-arg]
 
 
 # -- frozen-ness --------------------------------------------------------------
