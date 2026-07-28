@@ -170,6 +170,7 @@ ignore = [
     "D203",    # incompatible with D211
     "D213",    # incompatible with D212
     "PLR0913", # too many args — common for task/channel methods
+    "PLR0917", # too many positional args — tg.start_soon() only passes positionally
     "RUF002",  # ambiguous unicode in docstrings — en/em dashes are fine
     "RUF003",  # ambiguous unicode in comments
     "ANN401",  # Any in annotations — sometimes legitimate
@@ -195,6 +196,11 @@ indent-style = "space"
 line-ending = "lf"
 docstring-code-format = true
 docstring-code-line-length = 88
+# Ruff 0.16 began formatting Python blocks inside Markdown. The docs use
+# hand-aligned trailing comments in dataclass sketches, which the formatter
+# collapses (and in design.md splits a wrapped comment off its own line), so
+# prose stays as authored.
+exclude = ["*.md"]
 
 # ---------------------------------------------------------------------------
 # mypy — strict
