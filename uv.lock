@@ -790,7 +790,7 @@ type = [
 
 [[package]]
 name = "nidaqmx"
-version = "1.5.0"
+version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -804,9 +804,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "tzlocal" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b5/6a/52428a27f56a827e6949b3446d9e39797322a7e4a983ade09e2d22729f83/nidaqmx-1.5.0.tar.gz", hash = "sha256:4e7e20b2a898b550f4d8563a9298d51193f9c9073d9b79f39bff073822fcac51", size = 490165, upload-time = "2026-04-23T13:38:47.153Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/83/93e08a238fda0350d6cdd26ac68f2a280e6c86c4898d0a8ea52d8f8f2837/nidaqmx-1.6.0.tar.gz", hash = "sha256:324f3a7eaec8bbf8aa6497034a0bc8ffad77886b06bde966abaca007aa4ec055", size = 490306, upload-time = "2026-08-07T02:42:48.999Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/f9/081436f2217ed38a638d514b7444503c447c092a892a1dd33aa0e9f6644e/nidaqmx-1.5.0-py3-none-any.whl", hash = "sha256:ab2e6668027cc4f9fe0e4fdd7f5d77c6005f0587a849094b66bfde5bef533e7f", size = 553421, upload-time = "2026-04-23T13:38:44.956Z" },
+    { url = "https://files.pythonhosted.org/packages/98/11/912f9a9ef260b1aa799efff243aaa3e97deb955979d3cc45a8df02a8fad3/nidaqmx-1.6.0-py3-none-any.whl", hash = "sha256:89bcb0abb0aff306218b3061b0b90b9f32745b71e79b554406641a15694a9229", size = 553516, upload-time = "2026-08-07T02:42:47.012Z" },
 ]
 
 [[package]]
