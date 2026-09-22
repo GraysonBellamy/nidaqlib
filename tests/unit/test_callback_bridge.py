@@ -96,15 +96,17 @@ async def test_clean_shutdown_drainer_blocked() -> None:
     backend = FakeDaqBackend(read_block_default_shape=(1, 64))
     pre_threads = {t.ident for t in threading.enumerate()}
     with anyio.fail_after(2.0):
-        async with await open_device(_spec(), backend=backend, autostart=False) as session:
-            async with record(
+        async with (
+            await open_device(_spec(), backend=backend, autostart=False) as session,
+            record(
                 session,
                 chunk_size=64,
                 use_callback_bridge=True,
-            ) as _rec2:
-                _stream, _summary = _rec2.stream, _rec2.summary
-                # Intentionally do not fire callbacks — drainer parks in get().
-                pass
+            ) as _rec2,
+        ):
+            _stream, _summary = _rec2.stream, _rec2.summary
+            # Intentionally do not fire callbacks — drainer parks in get().
+            pass
     # Allow any background daemon teardown to settle; the drainer thread is
     # short-lived (it returns when the sentinel arrives).
     for _ in range(10):
