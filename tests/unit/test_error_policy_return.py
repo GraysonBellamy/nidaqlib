@@ -78,16 +78,18 @@ async def test_raise_default_propagates() -> None:
         read_errors={"ai_err": [NIDaqReadError("bad read")]},
     )
     with pytest.raises(BaseExceptionGroup) as ei:  # noqa: PT012
-        async with await open_device(_make_spec(), backend=backend) as session:
-            async with record(
+        async with (
+            await open_device(_make_spec(), backend=backend) as session,
+            record(
                 session,
                 chunk_size=50,
                 buffer_size=4,
                 error_policy=ErrorPolicy.RAISE,
-            ) as _rec2:
-                rx, _summary = _rec2.stream, _rec2.summary
-                async for _ in rx:
-                    pass
+            ) as _rec2,
+        ):
+            rx, _summary = _rec2.stream, _rec2.summary
+            async for _ in rx:
+                pass
     # The original NIDaqReadError must be in the group.
     matched, _rest = ei.value.split(NIDaqReadError)
     assert matched is not None
